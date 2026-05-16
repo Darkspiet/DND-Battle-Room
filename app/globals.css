@@ -407,7 +407,7 @@ select {
   border-radius: 8px;
   display: grid;
   gap: 4px;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   padding: 4px;
 }
 
@@ -431,6 +431,28 @@ select {
 .build-colors button {
   height: 30px;
   width: 30px;
+}
+
+.quick-effect-sizes {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.quick-effect-sizes button {
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 34px;
+}
+
+.quick-effect-sizes .selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
 }
 
 .background-preview {
@@ -554,6 +576,22 @@ input[type="range"] {
   pointer-events: none;
   position: absolute;
   z-index: 2;
+}
+
+.effect-template {
+  vector-effect: non-scaling-stroke;
+}
+
+.effect-label {
+  fill: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, .88);
+  stroke-linejoin: round;
+  stroke-width: 4px;
+  text-anchor: middle;
+  dominant-baseline: middle;
 }
 
 .token {

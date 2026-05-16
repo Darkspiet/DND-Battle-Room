@@ -6,7 +6,17 @@ import { rollDice } from "../lib/dice";
 import { createEntityId, getGuestProfile, loadRoom, saveRoom } from "../lib/storage";
 import { hasSupabaseConfig, joinSupabaseRoom, saveSupabaseRoom, subscribeToSupabaseRoom } from "../lib/supabaseRoom";
 import { prepareBattleMapImage, prepareTokenImage } from "../lib/tokenImages";
-import type { BattleMapBackground, DiceRoll, DrawingLine, GuestProfile, RoomState, Token, TokenType } from "../lib/types";
+import type {
+  AreaEffectShape,
+  AreaEffectTemplate,
+  BattleMapBackground,
+  DiceRoll,
+  DrawingLine,
+  GuestProfile,
+  RoomState,
+  Token,
+  TokenType
+} from "../lib/types";
 
 type Props = {
   roomCode: string;
@@ -15,6 +25,8 @@ type Props = {
 const QUICK_DICE = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"];
 const TOKEN_TYPES: TokenType[] = ["character", "npc", "monster", "object"];
 const BUILD_COLORS = ["#111827", "#b7394b", "#2563eb", "#227447", "#eab308", "#7c3aed", "#f97316", "#ffffff"];
+const EFFECT_SHAPES: AreaEffectShape[] = ["circle", "cone", "cube", "line"];
+const QUICK_EFFECT_SIZES = [5, 10, 15, 20, 30, 60];
 const DEFAULT_BACKGROUND_IMAGE_SETTINGS = {
   positionX: 0,
   positionY: 0,
@@ -22,11 +34,68 @@ const DEFAULT_BACKGROUND_IMAGE_SETTINGS = {
   opacity: 100
 };
 
-type BuildTool = "draw" | "wall" | "background";
+type BuildTool = "draw" | "wall" | "effects" | "background";
 type BuildUndo = (current: RoomState) => RoomState;
+type BoardPoint = { x: number; y: number };
 
 function roomApiPath(roomCode: string) {
   return `../../api/rooms/${roomCode}`;
+}
+
+function pointDistance(first: BoardPoint, second: BoardPoint) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function pointAngle(first: BoardPoint, second: BoardPoint) {
+  if (pointDistance(first, second) < 1) return 0;
+  return Math.atan2(second.y - first.y, second.x - first.x);
+}
+
+function polarPoint(origin: BoardPoint, angle: number, distance: number) {
+  return {
+    x: origin.x + Math.cos(angle) * distance,
+    y: origin.y + Math.sin(angle) * distance
+  };
+}
+
+function feetToPixels(feet: number, room: RoomState) {
+  const feetPerCell = room.grid.feetPerCell ?? 5;
+  return (feet / feetPerCell) * room.grid.cellSize;
+}
+
+function linePolygonPoints(effect: AreaEffectTemplate, room: RoomState) {
+  const angle = pointAngle(effect.origin, effect.target);
+  const length = feetToPixels(effect.sizeFeet, room);
+  const halfWidth = feetToPixels(effect.widthFeet ?? 5, room) / 2;
+  const end = polarPoint(effect.origin, angle, length);
+  const perpendicular = angle + Math.PI / 2;
+  const points = [
+    polarPoint(effect.origin, perpendicular, halfWidth),
+    polarPoint(end, perpendicular, halfWidth),
+    polarPoint(end, perpendicular, -halfWidth),
+    polarPoint(effect.origin, perpendicular, -halfWidth)
+  ];
+  return points.map((point) => `${point.x},${point.y}`).join(" ");
+}
+
+function conePath(effect: AreaEffectTemplate, room: RoomState) {
+  const angle = pointAngle(effect.origin, effect.target);
+  const radius = feetToPixels(effect.sizeFeet, room);
+  const spread = Math.PI / 3;
+  const first = polarPoint(effect.origin, angle - spread / 2, radius);
+  const second = polarPoint(effect.origin, angle + spread / 2, radius);
+  return `M ${effect.origin.x} ${effect.origin.y} L ${first.x} ${first.y} A ${radius} ${radius} 0 0 1 ${second.x} ${second.y} Z`;
+}
+
+function cubeRect(effect: AreaEffectTemplate, room: RoomState) {
+  const size = feetToPixels(effect.sizeFeet, room);
+  const signX = effect.target.x >= effect.origin.x ? 1 : -1;
+  const signY = effect.target.y >= effect.origin.y ? 1 : -1;
+  return {
+    x: signX > 0 ? effect.origin.x : effect.origin.x - size,
+    y: signY > 0 ? effect.origin.y : effect.origin.y - size,
+    size
+  };
 }
 
 export function Tabletop({ roomCode }: Props) {
@@ -42,6 +111,12 @@ export function Tabletop({ roomCode }: Props) {
   const [buildColor, setBuildColor] = useState(BUILD_COLORS[1]);
   const [buildUndoCount, setBuildUndoCount] = useState(0);
   const [draftLine, setDraftLine] = useState<DrawingLine | null>(null);
+  const [draftEffect, setDraftEffect] = useState<AreaEffectTemplate | null>(null);
+  const [effectShape, setEffectShape] = useState<AreaEffectShape>("circle");
+  const [effectSizeFeet, setEffectSizeFeet] = useState(20);
+  const [effectWidthFeet, setEffectWidthFeet] = useState(5);
+  const [effectOpacity, setEffectOpacity] = useState(35);
+  const [effectLabel, setEffectLabel] = useState("");
   const [backgroundUrl, setBackgroundUrl] = useState("");
   const [newToken, setNewToken] = useState({
     name: "Hero",
@@ -133,6 +208,7 @@ export function Tabletop({ roomCode }: Props) {
   const isDm = currentMember?.role === "dm";
   const boardWidth = room ? room.grid.columns * room.grid.cellSize : 0;
   const boardHeight = room ? room.grid.rows * room.grid.cellSize : 0;
+  const roomEffects = room?.effects ?? [];
   const selectedToken = room?.tokens.find((token) => token.id === selectedTokenId) ?? null;
 
   useEffect(() => {
@@ -343,8 +419,26 @@ export function Tabletop({ roomCode }: Props) {
     if (!profile || !room) return;
     if (!buildMode || !isDm || buildTool === "background") return;
     const point = getBoardPoint(event);
-    const startPoint = buildTool === "wall" ? snapBoardPoint(point) : point;
+    const startPoint = buildTool === "wall" || buildTool === "effects" ? snapBoardPoint(point) : point;
     event.currentTarget.setPointerCapture(event.pointerId);
+
+    if (buildTool === "effects") {
+      setDraftEffect({
+        id: createEntityId("effect"),
+        shape: effectShape,
+        ownerId: profile.id,
+        color: buildColor,
+        opacity: effectOpacity,
+        label: effectLabel.trim() || undefined,
+        origin: startPoint,
+        target: startPoint,
+        sizeFeet: effectSizeFeet,
+        widthFeet: effectShape === "line" ? effectWidthFeet : undefined,
+        createdAt: Date.now()
+      });
+      return;
+    }
+
     setDraftLine({
       id: createEntityId(buildTool === "wall" ? "wall" : "line"),
       kind: buildTool === "wall" ? "wall" : "freehand",
@@ -355,6 +449,12 @@ export function Tabletop({ roomCode }: Props) {
   }
 
   function continueBuildGesture(event: PointerEvent<HTMLDivElement>) {
+    if (draftEffect) {
+      const point = snapBoardPoint(getBoardPoint(event));
+      setDraftEffect((effect) => (effect ? { ...effect, target: point } : effect));
+      return;
+    }
+
     if (!draftLine) return;
     const point = getBoardPoint(event);
     setDraftLine((line) => {
@@ -367,6 +467,16 @@ export function Tabletop({ roomCode }: Props) {
   }
 
   function endBuildGesture() {
+    if (draftEffect) {
+      const effect = draftEffect;
+      setDraftEffect(null);
+      updateBuildRoom(
+        (current) => ({ ...current, effects: [...(current.effects ?? []), effect] }),
+        () => (current) => ({ ...current, effects: (current.effects ?? []).filter((item) => item.id !== effect.id) })
+      );
+      return;
+    }
+
     if (!draftLine) return;
     const line = draftLine;
     setDraftLine(null);
@@ -763,7 +873,7 @@ export function Tabletop({ roomCode }: Props) {
                   {buildMode ? "Exit Build" : "Enter Build"}
                 </button>
                 <div className="build-tool-tabs" aria-label="Build tools">
-                  {(["draw", "wall", "background"] as BuildTool[]).map((tool) => (
+                  {(["draw", "wall", "effects", "background"] as BuildTool[]).map((tool) => (
                     <button
                       className={buildTool === tool ? "selected" : ""}
                       key={tool}
@@ -773,12 +883,12 @@ export function Tabletop({ roomCode }: Props) {
                       }}
                       type="button"
                     >
-                      {tool === "draw" ? "Draw" : tool === "wall" ? "Walls" : "Background"}
+                      {tool === "draw" ? "Draw" : tool === "wall" ? "Walls" : tool === "effects" ? "Effects" : "Background"}
                     </button>
                   ))}
                 </div>
 
-                {buildTool === "draw" || buildTool === "wall" ? (
+                {buildTool === "draw" || buildTool === "wall" || buildTool === "effects" ? (
                   <>
                     <div>
                       <span className="field-label">Build color</span>
@@ -798,6 +908,78 @@ export function Tabletop({ roomCode }: Props) {
                     <label>
                       Custom color
                       <input type="color" value={buildColor} onChange={(event) => setBuildColor(event.target.value)} />
+                    </label>
+                  </>
+                ) : null}
+
+                {buildTool === "effects" ? (
+                  <>
+                    <label>
+                      Effect shape
+                      <select value={effectShape} onChange={(event) => setEffectShape(event.target.value as AreaEffectShape)}>
+                        {EFFECT_SHAPES.map((shape) => (
+                          <option key={shape} value={shape}>
+                            {shape === "circle" ? "Circle / sphere" : shape}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Label
+                      <input
+                        placeholder="Fireball, Web, aura"
+                        value={effectLabel}
+                        onChange={(event) => setEffectLabel(event.target.value)}
+                      />
+                    </label>
+                    <div>
+                      <span className="field-label">Quick size</span>
+                      <div className="quick-effect-sizes">
+                        {QUICK_EFFECT_SIZES.map((size) => (
+                          <button
+                            className={size === effectSizeFeet ? "selected" : ""}
+                            key={size}
+                            onClick={() => setEffectSizeFeet(size)}
+                            type="button"
+                          >
+                            {size} ft
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <label>
+                      Size in feet
+                      <input
+                        min={5}
+                        max={200}
+                        step={5}
+                        type="number"
+                        value={effectSizeFeet}
+                        onChange={(event) => setEffectSizeFeet(Number(event.target.value))}
+                      />
+                    </label>
+                    {effectShape === "line" ? (
+                      <label>
+                        Line width in feet
+                        <input
+                          min={5}
+                          max={30}
+                          step={5}
+                          type="number"
+                          value={effectWidthFeet}
+                          onChange={(event) => setEffectWidthFeet(Number(event.target.value))}
+                        />
+                      </label>
+                    ) : null}
+                    <label>
+                      Effect opacity
+                      <input
+                        min={10}
+                        max={80}
+                        type="range"
+                        value={effectOpacity}
+                        onChange={(event) => setEffectOpacity(Number(event.target.value))}
+                      />
                     </label>
                   </>
                 ) : null}
@@ -891,13 +1073,14 @@ export function Tabletop({ roomCode }: Props) {
                   </button>
                   <button
                     className="secondary-action compact danger"
-                    disabled={!room.drawings.length}
+                    disabled={!room.drawings.length && !roomEffects.length}
                     onClick={() =>
                       updateBuildRoom(
-                        (current) => ({ ...current, drawings: [] }),
+                        (current) => ({ ...current, drawings: [], effects: [] }),
                         (current) => {
                           const previous = current.drawings;
-                          return (nextRoom) => ({ ...nextRoom, drawings: previous });
+                          const previousEffects = current.effects ?? [];
+                          return (nextRoom) => ({ ...nextRoom, drawings: previous, effects: previousEffects });
                         }
                       )
                     }
@@ -946,6 +1129,7 @@ export function Tabletop({ roomCode }: Props) {
           <div className="map-toolbar">
             <span>{room.grid.columns} x {room.grid.rows}</span>
             <span>{room.tokens.length} tokens</span>
+            <span>{roomEffects.length} effects</span>
             <span>{buildMode ? `Build: ${buildTool === "wall" ? "Walls" : buildTool}` : "Token mode"}</span>
           </div>
           <div
@@ -981,6 +1165,95 @@ export function Tabletop({ roomCode }: Props) {
               }}
             />
             <svg className="drawing-layer" height={boardHeight} width={boardWidth}>
+              {[...roomEffects, ...(draftEffect ? [draftEffect] : [])].map((effect) => {
+                const fill = effect.color;
+                const stroke = effect.color;
+                const opacity = effect.opacity / 100;
+
+                if (effect.shape === "circle") {
+                  return (
+                    <g className="effect-template" key={effect.id}>
+                      <circle
+                        cx={effect.origin.x}
+                        cy={effect.origin.y}
+                        fill={fill}
+                        fillOpacity={opacity}
+                        r={feetToPixels(effect.sizeFeet, room)}
+                        stroke={stroke}
+                        strokeOpacity={Math.min(1, opacity + 0.35)}
+                        strokeWidth="3"
+                      />
+                      {effect.label ? (
+                        <text className="effect-label" x={effect.origin.x} y={effect.origin.y}>
+                          {effect.label}
+                        </text>
+                      ) : null}
+                    </g>
+                  );
+                }
+
+                if (effect.shape === "cone") {
+                  return (
+                    <g className="effect-template" key={effect.id}>
+                      <path
+                        d={conePath(effect, room)}
+                        fill={fill}
+                        fillOpacity={opacity}
+                        stroke={stroke}
+                        strokeOpacity={Math.min(1, opacity + 0.35)}
+                        strokeWidth="3"
+                      />
+                      {effect.label ? (
+                        <text className="effect-label" x={effect.origin.x + 8} y={effect.origin.y - 8}>
+                          {effect.label}
+                        </text>
+                      ) : null}
+                    </g>
+                  );
+                }
+
+                if (effect.shape === "cube") {
+                  const rect = cubeRect(effect, room);
+                  return (
+                    <g className="effect-template" key={effect.id}>
+                      <rect
+                        fill={fill}
+                        fillOpacity={opacity}
+                        height={rect.size}
+                        stroke={stroke}
+                        strokeOpacity={Math.min(1, opacity + 0.35)}
+                        strokeWidth="3"
+                        width={rect.size}
+                        x={rect.x}
+                        y={rect.y}
+                      />
+                      {effect.label ? (
+                        <text className="effect-label" x={rect.x + 8} y={rect.y + 20}>
+                          {effect.label}
+                        </text>
+                      ) : null}
+                    </g>
+                  );
+                }
+
+                return (
+                  <g className="effect-template" key={effect.id}>
+                    <polygon
+                      fill={fill}
+                      fillOpacity={opacity}
+                      points={linePolygonPoints(effect, room)}
+                      stroke={stroke}
+                      strokeOpacity={Math.min(1, opacity + 0.35)}
+                      strokeWidth="3"
+                    />
+                    {effect.label ? (
+                      <text className="effect-label" x={effect.origin.x + 8} y={effect.origin.y - 8}>
+                        {effect.label}
+                      </text>
+                    ) : null}
+                  </g>
+                );
+              })}
               {[...room.drawings, ...(draftLine ? [draftLine] : [])].map((line) => (
                 <polyline
                   fill="none"

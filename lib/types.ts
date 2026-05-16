@@ -17,6 +17,7 @@ export type GridSettings = {
   columns: number;
   cellSize: number;
   background: string;
+  feetPerCell?: number;
   backgroundImage?: BattleMapBackground;
 };
 
@@ -57,6 +58,22 @@ export type DrawingLine = {
   points: Array<{ x: number; y: number }>;
 };
 
+export type AreaEffectShape = "circle" | "cone" | "cube" | "line";
+
+export type AreaEffectTemplate = {
+  id: string;
+  shape: AreaEffectShape;
+  ownerId: string;
+  color: string;
+  opacity: number;
+  label?: string;
+  origin: { x: number; y: number };
+  target: { x: number; y: number };
+  sizeFeet: number;
+  widthFeet?: number;
+  createdAt: number;
+};
+
 export type DiceRoll = {
   id: string;
   userId: string;
@@ -83,6 +100,7 @@ export type RoomState = {
   grid: GridSettings;
   tokens: Token[];
   drawings: DrawingLine[];
+  effects: AreaEffectTemplate[];
   rolls: DiceRoll[];
   initiative: InitiativeEntry[];
 };

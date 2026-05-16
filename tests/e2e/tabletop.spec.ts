@@ -131,6 +131,70 @@ test("sets battlefield backgrounds from upload and URL", async ({ page }) => {
   await expect(page.locator(".map-background-image")).toHaveAttribute("src", dataUrl);
 });
 
+test("adds and undoes a colored circle effect", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Create new room" }).click();
+
+  await page.getByRole("button", { name: "Enter Build" }).click();
+  await page.getByRole("button", { name: "Effects" }).click();
+  await page.getByLabel("Use #7c3aed").click();
+
+  const buildPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Build Mode" }) });
+  await buildPanel.getByLabel("Label").fill("Fireball");
+  await buildPanel.getByLabel("Size in feet").fill("30");
+
+  const board = page.locator(".board");
+  const box = await board.boundingBox();
+  if (!box) throw new Error("Board did not render.");
+
+  await page.mouse.move(box.x + 180, box.y + 180);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 260, box.y + 180);
+  await page.mouse.up();
+
+  const effect = page.locator(".effect-template").first();
+  await expect(effect.locator("circle")).toHaveAttribute("stroke", "#7c3aed");
+  await expect(effect.locator("text")).toContainText("Fireball");
+
+  await page.keyboard.press("Control+Z");
+  await expect(page.locator(".effect-template")).toHaveCount(0);
+});
+
+test("adds cone cube and line effects", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Create new room" }).click();
+
+  await page.getByRole("button", { name: "Enter Build" }).click();
+  await page.getByRole("button", { name: "Effects" }).click();
+
+  const buildPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Build Mode" }) });
+  const board = page.locator(".board");
+  const box = await board.boundingBox();
+  if (!box) throw new Error("Board did not render.");
+
+  await buildPanel.getByLabel("Effect shape").selectOption("cone");
+  await page.mouse.move(box.x + 88, box.y + 88);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 220, box.y + 88);
+  await page.mouse.up();
+  await expect(page.locator(".effect-template path")).toHaveCount(1);
+
+  await buildPanel.getByLabel("Effect shape").selectOption("cube");
+  await page.mouse.move(box.x + 264, box.y + 88);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 352, box.y + 176);
+  await page.mouse.up();
+  await expect(page.locator(".effect-template rect")).toHaveCount(1);
+
+  await buildPanel.getByLabel("Effect shape").selectOption("line");
+  await buildPanel.getByLabel("Line width in feet").fill("10");
+  await page.mouse.move(box.x + 88, box.y + 264);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 352, box.y + 264);
+  await page.mouse.up();
+  await expect(page.locator(".effect-template polygon")).toHaveCount(1);
+});
+
 test("relative room links preserve preview proxy prefixes", async ({ page }) => {
   await page.goto("/");
   await page.evaluate(() => window.history.replaceState({}, "", "/proxy/3000/"));

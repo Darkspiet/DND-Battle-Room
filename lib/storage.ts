@@ -47,10 +47,12 @@ export function createEmptyRoom(roomCode: string, profile: GuestProfile): RoomSt
       rows: 18,
       columns: 26,
       cellSize: 44,
-      background: "#f4efe3"
+      background: "#f4efe3",
+      feetPerCell: 5
     },
     tokens: [],
     drawings: [],
+    effects: [],
     rolls: [],
     initiative: []
   };
@@ -83,7 +85,12 @@ export function loadRoom(roomCode: string, profile: GuestProfile): RoomState {
       )
     : [...parsed.members, toMember(profile, role)];
 
-  const next = { ...parsed, members };
+  const next = {
+    ...parsed,
+    grid: { ...parsed.grid, feetPerCell: parsed.grid.feetPerCell ?? 5 },
+    members,
+    effects: parsed.effects ?? []
+  };
   saveRoom(next);
   return next;
 }

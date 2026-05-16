@@ -30,10 +30,12 @@ function createRoom(roomCode: string, profile: GuestProfile): RoomState {
       rows: 18,
       columns: 26,
       cellSize: 44,
-      background: "#f4efe3"
+      background: "#f4efe3",
+      feetPerCell: 5
     },
     tokens: [],
     drawings: [],
+    effects: [],
     rolls: [],
     initiative: []
   };
