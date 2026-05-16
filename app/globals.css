@@ -391,6 +391,68 @@ select {
   top: 16px;
 }
 
+.build-ribbon {
+  align-items: stretch;
+  background: rgba(255, 255, 255, .96);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px;
+}
+
+.ribbon-title,
+.ribbon-section {
+  align-content: start;
+  border-right: 1px solid var(--line);
+  display: grid;
+  gap: 7px;
+  min-width: 138px;
+  padding-right: 10px;
+}
+
+.ribbon-title {
+  min-width: 120px;
+}
+
+.ribbon-title h2 {
+  margin: 0;
+}
+
+.ribbon-title span,
+.ribbon-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.ribbon-section.wide {
+  align-items: end;
+  grid-auto-flow: column;
+  grid-template-rows: auto auto;
+  min-width: max-content;
+}
+
+.ribbon-section label {
+  min-width: 110px;
+}
+
+.ribbon-section input,
+.ribbon-section select {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+.ribbon-section .compact {
+  min-height: 34px;
+  padding: 7px 10px;
+  width: auto;
+}
+
 .quick-dice {
   display: grid;
   gap: 7px;
@@ -580,6 +642,19 @@ input[type="range"] {
 
 .effect-template {
   vector-effect: non-scaling-stroke;
+}
+
+.build-object {
+  cursor: move;
+  pointer-events: visiblePainted;
+}
+
+.build-object.selected {
+  filter: drop-shadow(0 0 5px rgba(37, 99, 235, .75));
+}
+
+.wall-object.selected {
+  stroke-dasharray: 10 5;
 }
 
 .effect-label {

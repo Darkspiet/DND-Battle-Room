@@ -37,6 +37,10 @@ const DEFAULT_BACKGROUND_IMAGE_SETTINGS = {
 type BuildTool = "draw" | "wall" | "effects" | "background";
 type BuildUndo = (current: RoomState) => RoomState;
 type BoardPoint = { x: number; y: number };
+type SelectedBuildObject = { type: "wall" | "effect"; id: string } | null;
+type BuildObjectDrag =
+  | { type: "wall"; id: string; start: BoardPoint; points: BoardPoint[]; moved: boolean }
+  | { type: "effect"; id: string; start: BoardPoint; origin: BoardPoint; target: BoardPoint; moved: boolean };
 
 function roomApiPath(roomCode: string) {
   return `../../api/rooms/${roomCode}`;
@@ -106,6 +110,8 @@ export function Tabletop({ roomCode }: Props) {
   const [diceError, setDiceError] = useState("");
   const [draggingToken, setDraggingToken] = useState<string | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
+  const [selectedBuildObject, setSelectedBuildObject] = useState<SelectedBuildObject>(null);
+  const [draggingBuildObject, setDraggingBuildObject] = useState<BuildObjectDrag | null>(null);
   const [buildMode, setBuildMode] = useState(false);
   const [buildTool, setBuildTool] = useState<BuildTool>("draw");
   const [buildColor, setBuildColor] = useState(BUILD_COLORS[1]);
@@ -129,6 +135,7 @@ export function Tabletop({ roomCode }: Props) {
   const [backgroundError, setBackgroundError] = useState("");
   const [syncMode, setSyncMode] = useState<"connecting" | "supabase" | "server" | "local">("connecting");
   const [syncError, setSyncError] = useState("");
+  const boardRef = useRef<HTMLDivElement | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
   const buildUndoRef = useRef<BuildUndo[]>([]);
 
@@ -210,6 +217,12 @@ export function Tabletop({ roomCode }: Props) {
   const boardHeight = room ? room.grid.rows * room.grid.cellSize : 0;
   const roomEffects = room?.effects ?? [];
   const selectedToken = room?.tokens.find((token) => token.id === selectedTokenId) ?? null;
+  const selectedWall =
+    selectedBuildObject?.type === "wall"
+      ? room?.drawings.find((line) => line.id === selectedBuildObject.id && line.kind === "wall") ?? null
+      : null;
+  const selectedEffect =
+    selectedBuildObject?.type === "effect" ? roomEffects.find((effect) => effect.id === selectedBuildObject.id) ?? null : null;
 
   useEffect(() => {
     const channel = new BroadcastChannel(`dnd-room-${roomCode}`);
@@ -273,11 +286,15 @@ export function Tabletop({ roomCode }: Props) {
     setRoom((current) => {
       if (!current) return current;
       const next = updater(current);
-      buildUndoRef.current = [...buildUndoRef.current.slice(-39), createUndo(current, next)];
-      setBuildUndoCount(buildUndoRef.current.length);
+      pushBuildUndo(createUndo(current, next));
       persistRoom(next);
       return next;
     });
+  }
+
+  function pushBuildUndo(undo: BuildUndo) {
+    buildUndoRef.current = [...buildUndoRef.current.slice(-39), undo];
+    setBuildUndoCount(buildUndoRef.current.length);
   }
 
   function undoBuildAction() {
@@ -405,18 +422,170 @@ export function Tabletop({ roomCode }: Props) {
     }));
   }
 
+  function updateWall(wallId: string, patch: Partial<DrawingLine>) {
+    updateBuildRoom(
+      (current) => ({
+        ...current,
+        drawings: current.drawings.map((line) => (line.id === wallId && line.kind === "wall" ? { ...line, ...patch } : line))
+      }),
+      (current) => {
+        const previous = current.drawings.find((line) => line.id === wallId);
+        return (nextRoom) => ({
+          ...nextRoom,
+          drawings: nextRoom.drawings.map((line) => (line.id === wallId && previous ? previous : line))
+        });
+      }
+    );
+  }
+
+  function deleteWall(wallId: string) {
+    updateBuildRoom(
+      (current) => ({
+        ...current,
+        drawings: current.drawings.filter((line) => line.id !== wallId)
+      }),
+      (current) => {
+        const previous = current.drawings.find((line) => line.id === wallId);
+        return (nextRoom) => ({
+          ...nextRoom,
+          drawings: previous ? [...nextRoom.drawings, previous] : nextRoom.drawings
+        });
+      }
+    );
+    setSelectedBuildObject(null);
+  }
+
+  function updateEffect(effectId: string, patch: Partial<AreaEffectTemplate>) {
+    updateBuildRoom(
+      (current) => ({
+        ...current,
+        effects: (current.effects ?? []).map((effect) => (effect.id === effectId ? { ...effect, ...patch } : effect))
+      }),
+      (current) => {
+        const previous = (current.effects ?? []).find((effect) => effect.id === effectId);
+        return (nextRoom) => ({
+          ...nextRoom,
+          effects: (nextRoom.effects ?? []).map((effect) => (effect.id === effectId && previous ? previous : effect))
+        });
+      }
+    );
+  }
+
+  function deleteEffect(effectId: string) {
+    updateBuildRoom(
+      (current) => ({
+        ...current,
+        effects: (current.effects ?? []).filter((effect) => effect.id !== effectId)
+      }),
+      (current) => {
+        const previous = (current.effects ?? []).find((effect) => effect.id === effectId);
+        return (nextRoom) => ({
+          ...nextRoom,
+          effects: previous ? [...(nextRoom.effects ?? []), previous] : nextRoom.effects ?? []
+        });
+      }
+    );
+    setSelectedBuildObject(null);
+  }
+
+  function startBuildObjectDrag(event: PointerEvent<SVGElement>, object: SelectedBuildObject) {
+    if (!isDm || !room || !object) return;
+    const start = getBoardPointFromClient(event.clientX, event.clientY);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    setSelectedTokenId(null);
+    setSelectedBuildObject(object);
+
+    if (object.type === "wall") {
+      const wall = room.drawings.find((line) => line.id === object.id && line.kind === "wall");
+      if (wall) {
+        setDraggingBuildObject({ type: "wall", id: wall.id, start, points: wall.points, moved: false });
+      }
+      return;
+    }
+
+    const effect = (room.effects ?? []).find((item) => item.id === object.id);
+    if (effect) {
+      setDraggingBuildObject({
+        type: "effect",
+        id: effect.id,
+        start,
+        origin: effect.origin,
+        target: effect.target,
+        moved: false
+      });
+    }
+  }
+
+  function continueBuildObjectDrag(event: PointerEvent<SVGElement>) {
+    if (!draggingBuildObject) return;
+    const point = getBoardPointFromClient(event.clientX, event.clientY);
+    const delta = { x: point.x - draggingBuildObject.start.x, y: point.y - draggingBuildObject.start.y };
+
+    if (draggingBuildObject.type === "wall") {
+      const nextPoints = draggingBuildObject.points.map((item) => ({
+        x: Math.max(0, Math.min(boardWidth, item.x + delta.x)),
+        y: Math.max(0, Math.min(boardHeight, item.y + delta.y))
+      }));
+      updateRoom((current) => ({
+        ...current,
+        drawings: current.drawings.map((line) => (line.id === draggingBuildObject.id ? { ...line, points: nextPoints } : line))
+      }));
+    } else {
+      const origin = {
+        x: Math.max(0, Math.min(boardWidth, draggingBuildObject.origin.x + delta.x)),
+        y: Math.max(0, Math.min(boardHeight, draggingBuildObject.origin.y + delta.y))
+      };
+      const target = {
+        x: Math.max(0, Math.min(boardWidth, draggingBuildObject.target.x + delta.x)),
+        y: Math.max(0, Math.min(boardHeight, draggingBuildObject.target.y + delta.y))
+      };
+      updateRoom((current) => ({
+        ...current,
+        effects: (current.effects ?? []).map((effect) => (effect.id === draggingBuildObject.id ? { ...effect, origin, target } : effect))
+      }));
+    }
+
+    setDraggingBuildObject((current) => (current ? { ...current, moved: true } : current));
+  }
+
+  function endBuildObjectDrag(event: PointerEvent<SVGElement>) {
+    if (!draggingBuildObject) return;
+    const point = getBoardPointFromClient(event.clientX, event.clientY);
+    const moved = draggingBuildObject.moved || pointDistance(draggingBuildObject.start, point) > 1;
+
+    if (moved) {
+      if (draggingBuildObject.type === "wall") {
+        const originalPoints = draggingBuildObject.points;
+        const wallId = draggingBuildObject.id;
+        pushBuildUndo((current) => ({
+          ...current,
+          drawings: current.drawings.map((line) => (line.id === wallId ? { ...line, points: originalPoints } : line))
+        }));
+      } else {
+        const { id, origin, target } = draggingBuildObject;
+        pushBuildUndo((current) => ({
+          ...current,
+          effects: (current.effects ?? []).map((effect) => (effect.id === id ? { ...effect, origin, target } : effect))
+        }));
+      }
+    }
+
+    setDraggingBuildObject(null);
+  }
+
   function moveToken(event: PointerEvent<HTMLDivElement>, token: Token) {
     if (!room) return;
     if (!canControl(token)) return;
-    const board = event.currentTarget.parentElement?.getBoundingClientRect();
-    if (!board) return;
-    const x = Math.max(0, Math.min(room.grid.columns - token.size, Math.floor((event.clientX - board.left) / room.grid.cellSize)));
-    const y = Math.max(0, Math.min(room.grid.rows - token.size, Math.floor((event.clientY - board.top) / room.grid.cellSize)));
+    const point = getBoardPointFromClient(event.clientX, event.clientY);
+    const x = Math.max(0, Math.min(room.grid.columns - token.size, Math.floor(point.x / room.grid.cellSize)));
+    const y = Math.max(0, Math.min(room.grid.rows - token.size, Math.floor(point.y / room.grid.cellSize)));
     updateToken(token.id, { x, y });
   }
 
   function startBuildGesture(event: PointerEvent<HTMLDivElement>) {
     if (!profile || !room) return;
+    setSelectedBuildObject(null);
     if (!buildMode || !isDm || buildTool === "background") return;
     const point = getBoardPoint(event);
     const startPoint = buildTool === "wall" || buildTool === "effects" ? snapBoardPoint(point) : point;
@@ -489,10 +658,15 @@ export function Tabletop({ roomCode }: Props) {
   }
 
   function getBoardPoint(event: PointerEvent<HTMLDivElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
+    return getBoardPointFromClient(event.clientX, event.clientY);
+  }
+
+  function getBoardPointFromClient(clientX: number, clientY: number) {
+    const rect = boardRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
     return {
-      x: Math.max(0, Math.min(boardWidth, event.clientX - rect.left)),
-      y: Math.max(0, Math.min(boardHeight, event.clientY - rect.top))
+      x: Math.max(0, Math.min(boardWidth, clientX - rect.left)),
+      y: Math.max(0, Math.min(boardHeight, clientY - rect.top))
     };
   }
 
@@ -617,6 +791,239 @@ export function Tabletop({ roomCode }: Props) {
           );
         })}
       </section>
+
+      {isDm ? (
+        <section className="build-ribbon" aria-label="DM build ribbon">
+          <div className="ribbon-title">
+            <h2>Build Mode</h2>
+            <span>{buildMode ? buildTool : "Off"}</span>
+          </div>
+          <div className="ribbon-section">
+            <span className="ribbon-label">Mode</span>
+            <button
+              className={buildMode ? "primary-action compact" : "secondary-action compact"}
+              onClick={() => setBuildMode((current) => !current)}
+              type="button"
+            >
+              {buildMode ? "Exit Build" : "Enter Build"}
+            </button>
+            <button className="secondary-action compact" disabled={!buildUndoCount} onClick={undoBuildAction} type="button">
+              Undo
+            </button>
+          </div>
+
+          <div className="ribbon-section">
+            <span className="ribbon-label">Tools</span>
+            <div className="build-tool-tabs" aria-label="Build tools">
+              {(["draw", "wall", "effects", "background"] as BuildTool[]).map((tool) => (
+                <button
+                  className={buildTool === tool ? "selected" : ""}
+                  key={tool}
+                  onClick={() => {
+                    setBuildTool(tool);
+                    setBuildMode(true);
+                  }}
+                  type="button"
+                >
+                  {tool === "draw" ? "Draw" : tool === "wall" ? "Walls" : tool === "effects" ? "Effects" : "Background"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {buildTool === "draw" || buildTool === "wall" || buildTool === "effects" ? (
+            <div className="ribbon-section">
+              <span className="ribbon-label">Style</span>
+              <div className="color-picker build-colors" aria-label="Choose build color">
+                {BUILD_COLORS.map((candidate) => (
+                  <button
+                    aria-label={`Use ${candidate}`}
+                    className={candidate === buildColor ? "selected" : ""}
+                    key={candidate}
+                    onClick={() => setBuildColor(candidate)}
+                    style={{ background: candidate }}
+                    type="button"
+                  />
+                ))}
+              </div>
+              <label>
+                Custom color
+                <input type="color" value={buildColor} onChange={(event) => setBuildColor(event.target.value)} />
+              </label>
+            </div>
+          ) : null}
+
+          {buildTool === "effects" ? (
+            <div className="ribbon-section wide">
+              <span className="ribbon-label">Effects</span>
+              <label>
+                Effect shape
+                <select value={effectShape} onChange={(event) => setEffectShape(event.target.value as AreaEffectShape)}>
+                  {EFFECT_SHAPES.map((shape) => (
+                    <option key={shape} value={shape}>
+                      {shape === "circle" ? "Circle / sphere" : shape}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Label
+                <input placeholder="Fireball, Web, aura" value={effectLabel} onChange={(event) => setEffectLabel(event.target.value)} />
+              </label>
+              <div className="quick-effect-sizes">
+                {QUICK_EFFECT_SIZES.map((size) => (
+                  <button className={size === effectSizeFeet ? "selected" : ""} key={size} onClick={() => setEffectSizeFeet(size)} type="button">
+                    {size} ft
+                  </button>
+                ))}
+              </div>
+              <label>
+                Size in feet
+                <input
+                  min={5}
+                  max={200}
+                  step={5}
+                  type="number"
+                  value={effectSizeFeet}
+                  onChange={(event) => setEffectSizeFeet(Number(event.target.value))}
+                />
+              </label>
+              {effectShape === "line" ? (
+                <label>
+                  Line width in feet
+                  <input
+                    min={5}
+                    max={30}
+                    step={5}
+                    type="number"
+                    value={effectWidthFeet}
+                    onChange={(event) => setEffectWidthFeet(Number(event.target.value))}
+                  />
+                </label>
+              ) : null}
+              <label>
+                Effect opacity
+                <input min={10} max={80} type="range" value={effectOpacity} onChange={(event) => setEffectOpacity(Number(event.target.value))} />
+              </label>
+            </div>
+          ) : null}
+
+          {buildTool === "background" ? (
+            <div className="ribbon-section wide">
+              <span className="ribbon-label">Background</span>
+              <label>
+                Upload battlefield
+                <input accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => handleBackgroundImage(event.target.files?.[0] ?? null)} type="file" />
+              </label>
+              <label>
+                Battlefield image URL
+                <input value={backgroundUrl} onChange={(event) => setBackgroundUrl(event.target.value)} />
+              </label>
+              <button className="secondary-action compact" disabled={!backgroundUrl.trim()} onClick={applyBackgroundUrl} type="button">
+                Use image URL
+              </button>
+              {room.grid.backgroundImage ? (
+                <>
+                  <label>
+                    X
+                    <input type="number" value={room.grid.backgroundImage.positionX} onChange={(event) => updateBattleMapBackground({ positionX: Number(event.target.value) })} />
+                  </label>
+                  <label>
+                    Y
+                    <input type="number" value={room.grid.backgroundImage.positionY} onChange={(event) => updateBattleMapBackground({ positionY: Number(event.target.value) })} />
+                  </label>
+                  <label>
+                    Scale
+                    <input min={20} max={300} type="range" value={room.grid.backgroundImage.scale} onChange={(event) => updateBattleMapBackground({ scale: Number(event.target.value) })} />
+                  </label>
+                  <label>
+                    Opacity
+                    <input min={10} max={100} type="range" value={room.grid.backgroundImage.opacity} onChange={(event) => updateBattleMapBackground({ opacity: Number(event.target.value) })} />
+                  </label>
+                  <button className="secondary-action compact" onClick={() => updateBattleMapBackground({ ...DEFAULT_BACKGROUND_IMAGE_SETTINGS })} type="button">
+                    Reset
+                  </button>
+                  <button className="secondary-action compact danger" onClick={() => setBattleMapBackground(undefined)} type="button">
+                    Remove
+                  </button>
+                </>
+              ) : null}
+              {backgroundError ? <p className="error-text">{backgroundError}</p> : null}
+            </div>
+          ) : null}
+
+          <div className="ribbon-section">
+            <span className="ribbon-label">Map</span>
+            <label>
+              Columns
+              <input
+                min={8}
+                max={60}
+                type="number"
+                value={room.grid.columns}
+                onChange={(event) => updateRoom((current) => ({ ...current, grid: { ...current.grid, columns: Number(event.target.value) } }))}
+              />
+            </label>
+            <label>
+              Rows
+              <input
+                min={8}
+                max={50}
+                type="number"
+                value={room.grid.rows}
+                onChange={(event) => updateRoom((current) => ({ ...current, grid: { ...current.grid, rows: Number(event.target.value) } }))}
+              />
+            </label>
+            <label>
+              Cell size
+              <input
+                min={28}
+                max={72}
+                type="number"
+                value={room.grid.cellSize}
+                onChange={(event) => updateRoom((current) => ({ ...current, grid: { ...current.grid, cellSize: Number(event.target.value) } }))}
+              />
+            </label>
+            <label>
+              Background color
+              <input
+                type="color"
+                value={room.grid.background}
+                onChange={(event) =>
+                  updateBuildRoom(
+                    (current) => ({ ...current, grid: { ...current.grid, background: event.target.value } }),
+                    (current) => {
+                      const previous = current.grid.background;
+                      return (nextRoom) => ({ ...nextRoom, grid: { ...nextRoom.grid, background: previous } });
+                    }
+                  )
+                }
+              />
+            </label>
+          </div>
+
+          <div className="ribbon-section">
+            <span className="ribbon-label">Actions</span>
+            <button
+              className="secondary-action compact danger"
+              disabled={!room.drawings.length && !roomEffects.length}
+              onClick={() =>
+                updateBuildRoom(
+                  (current) => ({ ...current, drawings: [], effects: [] }),
+                  (current) => {
+                    const previous = current.drawings;
+                    const previousEffects = current.effects ?? [];
+                    return (nextRoom) => ({ ...nextRoom, drawings: previous, effects: previousEffects });
+                  }
+                )
+              }
+              type="button"
+            >
+              Clear marks
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <div className="workspace">
         <aside className="side-panel">
@@ -790,309 +1197,6 @@ export function Tabletop({ roomCode }: Props) {
             </section>
           ) : null}
 
-          {isDm ? (
-            <>
-              <section className="tool-card">
-                <div className="panel-heading">
-                  <h2>Map</h2>
-                  <span>Grid</span>
-                </div>
-                <label>
-                  Columns
-                  <input
-                    min={8}
-                    max={60}
-                    type="number"
-                    value={room.grid.columns}
-                    onChange={(event) =>
-                      updateRoom((current) => ({
-                        ...current,
-                        grid: { ...current.grid, columns: Number(event.target.value) }
-                      }))
-                    }
-                  />
-                </label>
-                <label>
-                  Rows
-                  <input
-                    min={8}
-                    max={50}
-                    type="number"
-                    value={room.grid.rows}
-                    onChange={(event) =>
-                      updateRoom((current) => ({ ...current, grid: { ...current.grid, rows: Number(event.target.value) } }))
-                    }
-                  />
-                </label>
-                <label>
-                  Cell size
-                  <input
-                    min={28}
-                    max={72}
-                    type="number"
-                    value={room.grid.cellSize}
-                    onChange={(event) =>
-                      updateRoom((current) => ({
-                        ...current,
-                        grid: { ...current.grid, cellSize: Number(event.target.value) }
-                      }))
-                    }
-                  />
-                </label>
-                <label>
-                  Background color
-                  <input
-                    type="color"
-                    value={room.grid.background}
-                    onChange={(event) =>
-                      updateBuildRoom(
-                        (current) => ({
-                          ...current,
-                          grid: { ...current.grid, background: event.target.value }
-                        }),
-                        (current) => {
-                          const previous = current.grid.background;
-                          return (nextRoom) => ({ ...nextRoom, grid: { ...nextRoom.grid, background: previous } });
-                        }
-                      )
-                    }
-                  />
-                </label>
-              </section>
-
-              <section className="tool-card build-card">
-                <div className="panel-heading">
-                  <h2>Build Mode</h2>
-                  <span>{buildMode ? buildTool : "Off"}</span>
-                </div>
-                <button
-                  className={buildMode ? "primary-action compact" : "secondary-action compact"}
-                  onClick={() => setBuildMode((current) => !current)}
-                  type="button"
-                >
-                  {buildMode ? "Exit Build" : "Enter Build"}
-                </button>
-                <div className="build-tool-tabs" aria-label="Build tools">
-                  {(["draw", "wall", "effects", "background"] as BuildTool[]).map((tool) => (
-                    <button
-                      className={buildTool === tool ? "selected" : ""}
-                      key={tool}
-                      onClick={() => {
-                        setBuildTool(tool);
-                        setBuildMode(true);
-                      }}
-                      type="button"
-                    >
-                      {tool === "draw" ? "Draw" : tool === "wall" ? "Walls" : tool === "effects" ? "Effects" : "Background"}
-                    </button>
-                  ))}
-                </div>
-
-                {buildTool === "draw" || buildTool === "wall" || buildTool === "effects" ? (
-                  <>
-                    <div>
-                      <span className="field-label">Build color</span>
-                      <div className="color-picker build-colors" aria-label="Choose build color">
-                        {BUILD_COLORS.map((candidate) => (
-                          <button
-                            aria-label={`Use ${candidate}`}
-                            className={candidate === buildColor ? "selected" : ""}
-                            key={candidate}
-                            onClick={() => setBuildColor(candidate)}
-                            style={{ background: candidate }}
-                            type="button"
-                          />
-                        ))}
-                      </div>
-                    </div>
-                    <label>
-                      Custom color
-                      <input type="color" value={buildColor} onChange={(event) => setBuildColor(event.target.value)} />
-                    </label>
-                  </>
-                ) : null}
-
-                {buildTool === "effects" ? (
-                  <>
-                    <label>
-                      Effect shape
-                      <select value={effectShape} onChange={(event) => setEffectShape(event.target.value as AreaEffectShape)}>
-                        {EFFECT_SHAPES.map((shape) => (
-                          <option key={shape} value={shape}>
-                            {shape === "circle" ? "Circle / sphere" : shape}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Label
-                      <input
-                        placeholder="Fireball, Web, aura"
-                        value={effectLabel}
-                        onChange={(event) => setEffectLabel(event.target.value)}
-                      />
-                    </label>
-                    <div>
-                      <span className="field-label">Quick size</span>
-                      <div className="quick-effect-sizes">
-                        {QUICK_EFFECT_SIZES.map((size) => (
-                          <button
-                            className={size === effectSizeFeet ? "selected" : ""}
-                            key={size}
-                            onClick={() => setEffectSizeFeet(size)}
-                            type="button"
-                          >
-                            {size} ft
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <label>
-                      Size in feet
-                      <input
-                        min={5}
-                        max={200}
-                        step={5}
-                        type="number"
-                        value={effectSizeFeet}
-                        onChange={(event) => setEffectSizeFeet(Number(event.target.value))}
-                      />
-                    </label>
-                    {effectShape === "line" ? (
-                      <label>
-                        Line width in feet
-                        <input
-                          min={5}
-                          max={30}
-                          step={5}
-                          type="number"
-                          value={effectWidthFeet}
-                          onChange={(event) => setEffectWidthFeet(Number(event.target.value))}
-                        />
-                      </label>
-                    ) : null}
-                    <label>
-                      Effect opacity
-                      <input
-                        min={10}
-                        max={80}
-                        type="range"
-                        value={effectOpacity}
-                        onChange={(event) => setEffectOpacity(Number(event.target.value))}
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                {buildTool === "background" ? (
-                  <>
-                    <label>
-                      Upload battlefield
-                      <input
-                        accept="image/png,image/jpeg,image/webp,image/gif"
-                        onChange={(event) => handleBackgroundImage(event.target.files?.[0] ?? null)}
-                        type="file"
-                      />
-                    </label>
-                    <label>
-                      Battlefield image URL
-                      <input value={backgroundUrl} onChange={(event) => setBackgroundUrl(event.target.value)} />
-                    </label>
-                    <button className="secondary-action compact" disabled={!backgroundUrl.trim()} onClick={applyBackgroundUrl} type="button">
-                      Use image URL
-                    </button>
-                    {room.grid.backgroundImage ? (
-                      <>
-                        <div className="background-preview">
-                          <img alt="Battlefield background preview" src={room.grid.backgroundImage.imageUrl} />
-                          <strong>{room.grid.backgroundImage.imageName ?? "Battlefield background"}</strong>
-                        </div>
-                        <div className="range-grid">
-                          <label>
-                            X
-                            <input
-                              type="number"
-                              value={room.grid.backgroundImage.positionX}
-                              onChange={(event) => updateBattleMapBackground({ positionX: Number(event.target.value) })}
-                            />
-                          </label>
-                          <label>
-                            Y
-                            <input
-                              type="number"
-                              value={room.grid.backgroundImage.positionY}
-                              onChange={(event) => updateBattleMapBackground({ positionY: Number(event.target.value) })}
-                            />
-                          </label>
-                        </div>
-                        <label>
-                          Scale
-                          <input
-                            min={20}
-                            max={300}
-                            type="range"
-                            value={room.grid.backgroundImage.scale}
-                            onChange={(event) => updateBattleMapBackground({ scale: Number(event.target.value) })}
-                          />
-                        </label>
-                        <label>
-                          Opacity
-                          <input
-                            min={10}
-                            max={100}
-                            type="range"
-                            value={room.grid.backgroundImage.opacity}
-                            onChange={(event) => updateBattleMapBackground({ opacity: Number(event.target.value) })}
-                          />
-                        </label>
-                        <div className="dice-row">
-                          <button
-                            className="secondary-action compact"
-                            onClick={() =>
-                              updateBattleMapBackground({
-                                ...DEFAULT_BACKGROUND_IMAGE_SETTINGS
-                              })
-                            }
-                            type="button"
-                          >
-                            Reset
-                          </button>
-                          <button className="secondary-action compact danger" onClick={() => setBattleMapBackground(undefined)} type="button">
-                            Remove
-                          </button>
-                        </div>
-                      </>
-                    ) : null}
-                    {backgroundError ? <p className="error-text">{backgroundError}</p> : null}
-                  </>
-                ) : null}
-
-                <div className="dice-row">
-                  <button className="secondary-action compact" disabled={!buildUndoCount} onClick={undoBuildAction} type="button">
-                    Undo
-                  </button>
-                  <button
-                    className="secondary-action compact danger"
-                    disabled={!room.drawings.length && !roomEffects.length}
-                    onClick={() =>
-                      updateBuildRoom(
-                        (current) => ({ ...current, drawings: [], effects: [] }),
-                        (current) => {
-                          const previous = current.drawings;
-                          const previousEffects = current.effects ?? [];
-                          return (nextRoom) => ({ ...nextRoom, drawings: previous, effects: previousEffects });
-                        }
-                      )
-                    }
-                    type="button"
-                  >
-                    Clear marks
-                  </button>
-                </div>
-              </section>
-            </>
-          ) : null}
-
           <section>
             <div className="panel-heading">
               <h2>Initiative</h2>
@@ -1137,6 +1241,7 @@ export function Tabletop({ roomCode }: Props) {
             onPointerDown={startBuildGesture}
             onPointerMove={continueBuildGesture}
             onPointerUp={endBuildGesture}
+            ref={boardRef}
             style={{
               width: boardWidth,
               height: boardHeight,
@@ -1169,10 +1274,17 @@ export function Tabletop({ roomCode }: Props) {
                 const fill = effect.color;
                 const stroke = effect.color;
                 const opacity = effect.opacity / 100;
+                const isSelected = selectedBuildObject?.type === "effect" && selectedBuildObject.id === effect.id;
+                const effectClassName = isSelected ? "effect-template build-object selected" : "effect-template build-object";
+                const effectHandlers = {
+                  onPointerDown: (event: PointerEvent<SVGElement>) => startBuildObjectDrag(event, { type: "effect", id: effect.id }),
+                  onPointerMove: continueBuildObjectDrag,
+                  onPointerUp: endBuildObjectDrag
+                };
 
                 if (effect.shape === "circle") {
                   return (
-                    <g className="effect-template" key={effect.id}>
+                    <g className={effectClassName} key={effect.id} {...effectHandlers}>
                       <circle
                         cx={effect.origin.x}
                         cy={effect.origin.y}
@@ -1194,7 +1306,7 @@ export function Tabletop({ roomCode }: Props) {
 
                 if (effect.shape === "cone") {
                   return (
-                    <g className="effect-template" key={effect.id}>
+                    <g className={effectClassName} key={effect.id} {...effectHandlers}>
                       <path
                         d={conePath(effect, room)}
                         fill={fill}
@@ -1215,7 +1327,7 @@ export function Tabletop({ roomCode }: Props) {
                 if (effect.shape === "cube") {
                   const rect = cubeRect(effect, room);
                   return (
-                    <g className="effect-template" key={effect.id}>
+                    <g className={effectClassName} key={effect.id} {...effectHandlers}>
                       <rect
                         fill={fill}
                         fillOpacity={opacity}
@@ -1237,7 +1349,7 @@ export function Tabletop({ roomCode }: Props) {
                 }
 
                 return (
-                  <g className="effect-template" key={effect.id}>
+                  <g className={effectClassName} key={effect.id} {...effectHandlers}>
                     <polygon
                       fill={fill}
                       fillOpacity={opacity}
@@ -1256,8 +1368,18 @@ export function Tabletop({ roomCode }: Props) {
               })}
               {[...room.drawings, ...(draftLine ? [draftLine] : [])].map((line) => (
                 <polyline
+                  className={
+                    line.kind === "wall"
+                      ? selectedBuildObject?.type === "wall" && selectedBuildObject.id === line.id
+                        ? "build-object wall-object selected"
+                        : "build-object wall-object"
+                      : undefined
+                  }
                   fill="none"
                   key={line.id}
+                  onPointerDown={line.kind === "wall" ? (event) => startBuildObjectDrag(event, { type: "wall", id: line.id }) : undefined}
+                  onPointerMove={line.kind === "wall" ? continueBuildObjectDrag : undefined}
+                  onPointerUp={line.kind === "wall" ? endBuildObjectDrag : undefined}
                   points={line.points.map((point) => `${point.x},${point.y}`).join(" ")}
                   stroke={line.color}
                   strokeLinecap="round"
@@ -1302,6 +1424,85 @@ export function Tabletop({ roomCode }: Props) {
         </section>
 
         <aside className="right-panel">
+          {isDm && (selectedWall || selectedEffect) ? (
+            <section className="tool-card">
+              <div className="panel-heading">
+                <h2>Selected Object</h2>
+                <span>{selectedWall ? "Wall" : "Effect"}</span>
+              </div>
+              {selectedWall ? (
+                <>
+                  <label>
+                    Wall color
+                    <input type="color" value={selectedWall.color} onChange={(event) => updateWall(selectedWall.id, { color: event.target.value })} />
+                  </label>
+                  <button className="secondary-action compact danger" onClick={() => deleteWall(selectedWall.id)} type="button">
+                    Delete wall
+                  </button>
+                </>
+              ) : null}
+              {selectedEffect ? (
+                <>
+                  <label>
+                    Effect shape
+                    <select value={selectedEffect.shape} onChange={(event) => updateEffect(selectedEffect.id, { shape: event.target.value as AreaEffectShape })}>
+                      {EFFECT_SHAPES.map((shape) => (
+                        <option key={shape} value={shape}>
+                          {shape === "circle" ? "Circle / sphere" : shape}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Label
+                    <input value={selectedEffect.label ?? ""} onChange={(event) => updateEffect(selectedEffect.id, { label: event.target.value || undefined })} />
+                  </label>
+                  <label>
+                    Color
+                    <input type="color" value={selectedEffect.color} onChange={(event) => updateEffect(selectedEffect.id, { color: event.target.value })} />
+                  </label>
+                  <label>
+                    Size in feet
+                    <input
+                      min={5}
+                      max={200}
+                      step={5}
+                      type="number"
+                      value={selectedEffect.sizeFeet}
+                      onChange={(event) => updateEffect(selectedEffect.id, { sizeFeet: Number(event.target.value) })}
+                    />
+                  </label>
+                  {selectedEffect.shape === "line" ? (
+                    <label>
+                      Line width in feet
+                      <input
+                        min={5}
+                        max={30}
+                        step={5}
+                        type="number"
+                        value={selectedEffect.widthFeet ?? 5}
+                        onChange={(event) => updateEffect(selectedEffect.id, { widthFeet: Number(event.target.value) })}
+                      />
+                    </label>
+                  ) : null}
+                  <label>
+                    Opacity
+                    <input
+                      min={10}
+                      max={80}
+                      type="range"
+                      value={selectedEffect.opacity}
+                      onChange={(event) => updateEffect(selectedEffect.id, { opacity: Number(event.target.value) })}
+                    />
+                  </label>
+                  <button className="secondary-action compact danger" onClick={() => deleteEffect(selectedEffect.id)} type="button">
+                    Delete effect
+                  </button>
+                </>
+              ) : null}
+            </section>
+          ) : null}
+
           <section className="tool-card">
             <div className="panel-heading">
               <h2>Room Log</h2>

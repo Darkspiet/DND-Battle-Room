@@ -11,6 +11,7 @@ test("creates a room and shows the tabletop", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /^Room [A-Z0-9]+$/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Dice" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Tokens" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Build Mode" })).toBeVisible();
   await expect(page.locator(".board")).toBeVisible();
 });
 
@@ -114,6 +115,43 @@ test("adds snapped visual walls in build mode", async ({ page }) => {
   }
 });
 
+test("selects edits drags and deletes a wall object", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Create new room" }).click();
+
+  await page.getByRole("button", { name: "Enter Build" }).click();
+  await page.getByRole("button", { name: "Walls" }).click();
+
+  const board = page.locator(".board");
+  const box = await board.boundingBox();
+  if (!box) throw new Error("Board did not render.");
+
+  await page.mouse.move(box.x + 63, box.y + 63);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 153, box.y + 108);
+  await page.mouse.up();
+
+  const wall = page.locator(".wall-object").first();
+  await wall.click();
+  await expect(page.getByRole("heading", { name: "Selected Object" })).toBeVisible();
+
+  const objectPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Selected Object" }) });
+  await objectPanel.getByLabel("Wall color").fill("#227447");
+  await expect(wall).toHaveAttribute("stroke", "#227447");
+
+  const before = (await wall.getAttribute("points")) ?? "";
+  const wallBox = await wall.boundingBox();
+  if (!wallBox) throw new Error("Wall did not render.");
+  await page.mouse.move(wallBox.x + wallBox.width / 2, wallBox.y + wallBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(wallBox.x + wallBox.width / 2 + 44, wallBox.y + wallBox.height / 2);
+  await page.mouse.up();
+  await expect(wall).not.toHaveAttribute("points", before);
+
+  await objectPanel.getByRole("button", { name: "Delete wall" }).click();
+  await expect(page.locator(".wall-object")).toHaveCount(0);
+});
+
 test("sets battlefield backgrounds from upload and URL", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Create new room" }).click();
@@ -144,6 +182,7 @@ test("adds and undoes a colored circle effect", async ({ page }) => {
   await buildPanel.getByLabel("Size in feet").fill("30");
 
   const board = page.locator(".board");
+  await board.scrollIntoViewIfNeeded();
   const box = await board.boundingBox();
   if (!box) throw new Error("Board did not render.");
 
@@ -160,6 +199,50 @@ test("adds and undoes a colored circle effect", async ({ page }) => {
   await expect(page.locator(".effect-template")).toHaveCount(0);
 });
 
+test("selects edits drags and deletes an effect object", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Create new room" }).click();
+
+  await page.getByRole("button", { name: "Enter Build" }).click();
+  await page.getByRole("button", { name: "Effects" }).click();
+
+  const buildPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Build Mode" }) });
+  await buildPanel.getByLabel("Label").fill("Fireball");
+
+  const board = page.locator(".board");
+  await board.scrollIntoViewIfNeeded();
+  const box = await board.boundingBox();
+  if (!box) throw new Error("Board did not render.");
+
+  await page.mouse.move(box.x + 180, box.y + 180);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 260, box.y + 180);
+  await page.mouse.up();
+
+  const effect = page.locator(".effect-template").first();
+  await effect.click();
+  await expect(page.getByRole("heading", { name: "Selected Object" })).toBeVisible();
+
+  const objectPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Selected Object" }) });
+  await objectPanel.getByLabel("Label").fill("Storm");
+  await objectPanel.getByLabel("Color").fill("#227447");
+  await objectPanel.getByLabel("Size in feet").fill("40");
+  await expect(effect.locator("text")).toContainText("Storm");
+  await expect(effect.locator("circle")).toHaveAttribute("stroke", "#227447");
+
+  const beforeCx = await effect.locator("circle").getAttribute("cx");
+  const effectBox = await effect.boundingBox();
+  if (!effectBox) throw new Error("Effect did not render.");
+  await page.mouse.move(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(effectBox.x + effectBox.width / 2 + 44, effectBox.y + effectBox.height / 2);
+  await page.mouse.up();
+  await expect(effect.locator("circle")).not.toHaveAttribute("cx", beforeCx ?? "");
+
+  await objectPanel.getByRole("button", { name: "Delete effect" }).click();
+  await expect(page.locator(".effect-template")).toHaveCount(0);
+});
+
 test("adds cone cube and line effects", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Create new room" }).click();
@@ -169,6 +252,7 @@ test("adds cone cube and line effects", async ({ page }) => {
 
   const buildPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Build Mode" }) });
   const board = page.locator(".board");
+  await board.scrollIntoViewIfNeeded();
   const box = await board.boundingBox();
   if (!box) throw new Error("Board did not render.");
 
@@ -180,17 +264,17 @@ test("adds cone cube and line effects", async ({ page }) => {
   await expect(page.locator(".effect-template path")).toHaveCount(1);
 
   await buildPanel.getByLabel("Effect shape").selectOption("cube");
-  await page.mouse.move(box.x + 264, box.y + 88);
+  await page.mouse.move(box.x + 88, box.y + 300);
   await page.mouse.down();
-  await page.mouse.move(box.x + 352, box.y + 176);
+  await page.mouse.move(box.x + 176, box.y + 388);
   await page.mouse.up();
   await expect(page.locator(".effect-template rect")).toHaveCount(1);
 
   await buildPanel.getByLabel("Effect shape").selectOption("line");
   await buildPanel.getByLabel("Line width in feet").fill("10");
-  await page.mouse.move(box.x + 88, box.y + 264);
+  await page.mouse.move(box.x + 360, box.y + 300);
   await page.mouse.down();
-  await page.mouse.move(box.x + 352, box.y + 264);
+  await page.mouse.move(box.x + 580, box.y + 300);
   await page.mouse.up();
   await expect(page.locator(".effect-template polygon")).toHaveCount(1);
 });
