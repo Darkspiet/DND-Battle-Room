@@ -17,6 +17,17 @@ export type GridSettings = {
   columns: number;
   cellSize: number;
   background: string;
+  backgroundImage?: BattleMapBackground;
+};
+
+export type BattleMapBackground = {
+  source: "upload" | "url";
+  imageUrl: string;
+  imageName?: string;
+  positionX: number;
+  positionY: number;
+  scale: number;
+  opacity: number;
 };
 
 export type TokenType = "character" | "npc" | "monster" | "object";
@@ -40,6 +51,7 @@ export type Token = {
 
 export type DrawingLine = {
   id: string;
+  kind?: "freehand" | "wall";
   ownerId: string;
   color: string;
   points: Array<{ x: number; y: number }>;

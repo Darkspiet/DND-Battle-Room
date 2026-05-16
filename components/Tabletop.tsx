@@ -5,8 +5,8 @@ import { PointerEvent, useEffect, useRef, useState } from "react";
 import { rollDice } from "../lib/dice";
 import { createEntityId, getGuestProfile, loadRoom, saveRoom } from "../lib/storage";
 import { hasSupabaseConfig, joinSupabaseRoom, saveSupabaseRoom, subscribeToSupabaseRoom } from "../lib/supabaseRoom";
-import { prepareTokenImage } from "../lib/tokenImages";
-import type { DiceRoll, DrawingLine, GuestProfile, RoomState, Token, TokenType } from "../lib/types";
+import { prepareBattleMapImage, prepareTokenImage } from "../lib/tokenImages";
+import type { BattleMapBackground, DiceRoll, DrawingLine, GuestProfile, RoomState, Token, TokenType } from "../lib/types";
 
 type Props = {
   roomCode: string;
@@ -14,6 +14,16 @@ type Props = {
 
 const QUICK_DICE = ["d4", "d6", "d8", "d10", "d12", "d20", "d100"];
 const TOKEN_TYPES: TokenType[] = ["character", "npc", "monster", "object"];
+const BUILD_COLORS = ["#111827", "#b7394b", "#2563eb", "#227447", "#eab308", "#7c3aed", "#f97316", "#ffffff"];
+const DEFAULT_BACKGROUND_IMAGE_SETTINGS = {
+  positionX: 0,
+  positionY: 0,
+  scale: 100,
+  opacity: 100
+};
+
+type BuildTool = "draw" | "wall" | "background";
+type BuildUndo = (current: RoomState) => RoomState;
 
 function roomApiPath(roomCode: string) {
   return `../../api/rooms/${roomCode}`;
@@ -27,8 +37,12 @@ export function Tabletop({ roomCode }: Props) {
   const [diceError, setDiceError] = useState("");
   const [draggingToken, setDraggingToken] = useState<string | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
-  const [drawMode, setDrawMode] = useState(false);
+  const [buildMode, setBuildMode] = useState(false);
+  const [buildTool, setBuildTool] = useState<BuildTool>("draw");
+  const [buildColor, setBuildColor] = useState(BUILD_COLORS[1]);
+  const [buildUndoCount, setBuildUndoCount] = useState(0);
   const [draftLine, setDraftLine] = useState<DrawingLine | null>(null);
+  const [backgroundUrl, setBackgroundUrl] = useState("");
   const [newToken, setNewToken] = useState({
     name: "Hero",
     icon: "⚔",
@@ -37,9 +51,11 @@ export function Tabletop({ roomCode }: Props) {
     type: "character" as TokenType
   });
   const [imageError, setImageError] = useState("");
+  const [backgroundError, setBackgroundError] = useState("");
   const [syncMode, setSyncMode] = useState<"connecting" | "supabase" | "server" | "local">("connecting");
   const [syncError, setSyncError] = useState("");
   const channelRef = useRef<BroadcastChannel | null>(null);
+  const buildUndoRef = useRef<BuildUndo[]>([]);
 
   useEffect(() => {
     const loadedProfile = getGuestProfile();
@@ -133,27 +149,67 @@ export function Tabletop({ roomCode }: Props) {
     saveRoom(room);
   }, [room]);
 
+  useEffect(() => {
+    if (!buildMode || !isDm) return;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const isEditable = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
+      if (isEditable) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undoBuildAction();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [buildMode, isDm]);
+
+  function persistRoom(next: RoomState) {
+    saveRoom(next);
+    channelRef.current?.postMessage(next);
+    if (syncMode === "server") {
+      fetch(roomApiPath(roomCode), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next)
+      }).catch(() => setSyncMode("local"));
+    }
+    if (syncMode === "supabase") {
+      saveSupabaseRoom(next).catch((error) => {
+        setSyncError(error instanceof Error ? error.message : "Supabase save failed.");
+        setSyncMode("local");
+      });
+    }
+  }
+
   function updateRoom(updater: (current: RoomState) => RoomState) {
     setRoom((current) => {
       if (!current) return current;
       const next = updater(current);
-      saveRoom(next);
-      channelRef.current?.postMessage(next);
-      if (syncMode === "server") {
-        fetch(roomApiPath(roomCode), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(next)
-        }).catch(() => setSyncMode("local"));
-      }
-      if (syncMode === "supabase") {
-        saveSupabaseRoom(next).catch((error) => {
-          setSyncError(error instanceof Error ? error.message : "Supabase save failed.");
-          setSyncMode("local");
-        });
-      }
+      persistRoom(next);
       return next;
     });
+  }
+
+  function updateBuildRoom(updater: (current: RoomState) => RoomState, createUndo: (current: RoomState, next: RoomState) => BuildUndo) {
+    setRoom((current) => {
+      if (!current) return current;
+      const next = updater(current);
+      buildUndoRef.current = [...buildUndoRef.current.slice(-39), createUndo(current, next)];
+      setBuildUndoCount(buildUndoRef.current.length);
+      persistRoom(next);
+      return next;
+    });
+  }
+
+  function undoBuildAction() {
+    const undo = buildUndoRef.current.at(-1);
+    if (!undo) return;
+    buildUndoRef.current = buildUndoRef.current.slice(0, -1);
+    setBuildUndoCount(buildUndoRef.current.length);
+    updateRoom(undo);
   }
 
   function canControl(token: Token) {
@@ -203,6 +259,61 @@ export function Tabletop({ roomCode }: Props) {
     }
   }
 
+  async function handleBackgroundImage(file: File | null) {
+    if (!file || !isDm) return;
+    try {
+      const image = await prepareBattleMapImage(file);
+      setBackgroundError("");
+      setBackgroundUrl("");
+      setBattleMapBackground({
+        source: "upload",
+        imageUrl: image.imageUrl,
+        imageName: image.imageName,
+        ...DEFAULT_BACKGROUND_IMAGE_SETTINGS
+      });
+    } catch (error) {
+      setBackgroundError(error instanceof Error ? error.message : "Could not use that background.");
+    }
+  }
+
+  function applyBackgroundUrl() {
+    const imageUrl = backgroundUrl.trim();
+    if (!imageUrl) return;
+    setBackgroundError("");
+    setBattleMapBackground({
+      source: "url",
+      imageUrl,
+      imageName: "Linked battlefield",
+      ...DEFAULT_BACKGROUND_IMAGE_SETTINGS
+    });
+  }
+
+  function setBattleMapBackground(backgroundImage: BattleMapBackground | undefined) {
+    updateBuildRoom(
+      (current) => ({ ...current, grid: { ...current.grid, backgroundImage } }),
+      (current) => {
+        const previous = current.grid.backgroundImage;
+        return (nextRoom) => ({ ...nextRoom, grid: { ...nextRoom.grid, backgroundImage: previous } });
+      }
+    );
+  }
+
+  function updateBattleMapBackground(patch: Partial<BattleMapBackground>) {
+    updateBuildRoom(
+      (current) => {
+        if (!current.grid.backgroundImage) return current;
+        return {
+          ...current,
+          grid: { ...current.grid, backgroundImage: { ...current.grid.backgroundImage, ...patch } }
+        };
+      },
+      (current) => {
+        const previous = current.grid.backgroundImage;
+        return (nextRoom) => ({ ...nextRoom, grid: { ...nextRoom.grid, backgroundImage: previous } });
+      }
+    );
+  }
+
   function deleteToken(tokenId: string) {
     updateRoom((current) => ({
       ...current,
@@ -228,30 +339,42 @@ export function Tabletop({ roomCode }: Props) {
     updateToken(token.id, { x, y });
   }
 
-  function startDraw(event: PointerEvent<HTMLDivElement>) {
+  function startBuildGesture(event: PointerEvent<HTMLDivElement>) {
     if (!profile || !room) return;
-    if (!drawMode || !isDm) return;
+    if (!buildMode || !isDm || buildTool === "background") return;
     const point = getBoardPoint(event);
+    const startPoint = buildTool === "wall" ? snapBoardPoint(point) : point;
+    event.currentTarget.setPointerCapture(event.pointerId);
     setDraftLine({
-      id: createEntityId("line"),
+      id: createEntityId(buildTool === "wall" ? "wall" : "line"),
+      kind: buildTool === "wall" ? "wall" : "freehand",
       ownerId: profile.id,
-      color: profile.color,
-      points: [point]
+      color: buildColor,
+      points: buildTool === "wall" ? [startPoint, startPoint] : [startPoint]
     });
   }
 
-  function continueDraw(event: PointerEvent<HTMLDivElement>) {
+  function continueBuildGesture(event: PointerEvent<HTMLDivElement>) {
     if (!draftLine) return;
     const point = getBoardPoint(event);
-    setDraftLine((line) => (line ? { ...line, points: [...line.points, point] } : line));
+    setDraftLine((line) => {
+      if (!line) return line;
+      if (line.kind === "wall") {
+        return { ...line, points: [line.points[0], snapBoardPoint(point)] };
+      }
+      return { ...line, points: [...line.points, point] };
+    });
   }
 
-  function endDraw() {
+  function endBuildGesture() {
     if (!draftLine) return;
     const line = draftLine;
     setDraftLine(null);
-    if (line.points.length > 1) {
-      updateRoom((current) => ({ ...current, drawings: [...current.drawings, line] }));
+    if (line.points.length > 1 && !isSamePoint(line.points[0], line.points[line.points.length - 1])) {
+      updateBuildRoom(
+        (current) => ({ ...current, drawings: [...current.drawings, line] }),
+        () => (current) => ({ ...current, drawings: current.drawings.filter((item) => item.id !== line.id) })
+      );
     }
   }
 
@@ -261,6 +384,18 @@ export function Tabletop({ roomCode }: Props) {
       x: Math.max(0, Math.min(boardWidth, event.clientX - rect.left)),
       y: Math.max(0, Math.min(boardHeight, event.clientY - rect.top))
     };
+  }
+
+  function snapBoardPoint(point: { x: number; y: number }) {
+    if (!room) return point;
+    return {
+      x: Math.max(0, Math.min(boardWidth, Math.round(point.x / room.grid.cellSize) * room.grid.cellSize)),
+      y: Math.max(0, Math.min(boardHeight, Math.round(point.y / room.grid.cellSize) * room.grid.cellSize))
+    };
+  }
+
+  function isSamePoint(first: { x: number; y: number }, second: { x: number; y: number }) {
+    return first.x === second.x && first.y === second.y;
   }
 
   function doRoll(expression = diceExpression) {
@@ -546,77 +681,233 @@ export function Tabletop({ roomCode }: Props) {
           ) : null}
 
           {isDm ? (
-            <section className="tool-card">
-              <div className="panel-heading">
-                <h2>Map</h2>
-                <span>DM tools</span>
-              </div>
-              <label>
-                Columns
-                <input
-                  min={8}
-                  max={60}
-                  type="number"
-                  value={room.grid.columns}
-                  onChange={(event) =>
-                    updateRoom((current) => ({
-                      ...current,
-                      grid: { ...current.grid, columns: Number(event.target.value) }
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Rows
-                <input
-                  min={8}
-                  max={50}
-                  type="number"
-                  value={room.grid.rows}
-                  onChange={(event) =>
-                    updateRoom((current) => ({ ...current, grid: { ...current.grid, rows: Number(event.target.value) } }))
-                  }
-                />
-              </label>
-              <label>
-                Cell size
-                <input
-                  min={28}
-                  max={72}
-                  type="number"
-                  value={room.grid.cellSize}
-                  onChange={(event) =>
-                    updateRoom((current) => ({
-                      ...current,
-                      grid: { ...current.grid, cellSize: Number(event.target.value) }
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Background
-                <input
-                  type="color"
-                  value={room.grid.background}
-                  onChange={(event) =>
-                    updateRoom((current) => ({
-                      ...current,
-                      grid: { ...current.grid, background: event.target.value }
-                    }))
-                  }
-                />
-              </label>
-              <button className={drawMode ? "primary-action compact" : "secondary-action compact"} onClick={() => setDrawMode(!drawMode)} type="button">
-                Draw mode
-              </button>
-              <button
-                className="secondary-action compact"
-                onClick={() => updateRoom((current) => ({ ...current, drawings: [] }))}
-                type="button"
-              >
-                Clear drawings
-              </button>
-            </section>
+            <>
+              <section className="tool-card">
+                <div className="panel-heading">
+                  <h2>Map</h2>
+                  <span>Grid</span>
+                </div>
+                <label>
+                  Columns
+                  <input
+                    min={8}
+                    max={60}
+                    type="number"
+                    value={room.grid.columns}
+                    onChange={(event) =>
+                      updateRoom((current) => ({
+                        ...current,
+                        grid: { ...current.grid, columns: Number(event.target.value) }
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Rows
+                  <input
+                    min={8}
+                    max={50}
+                    type="number"
+                    value={room.grid.rows}
+                    onChange={(event) =>
+                      updateRoom((current) => ({ ...current, grid: { ...current.grid, rows: Number(event.target.value) } }))
+                    }
+                  />
+                </label>
+                <label>
+                  Cell size
+                  <input
+                    min={28}
+                    max={72}
+                    type="number"
+                    value={room.grid.cellSize}
+                    onChange={(event) =>
+                      updateRoom((current) => ({
+                        ...current,
+                        grid: { ...current.grid, cellSize: Number(event.target.value) }
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Background color
+                  <input
+                    type="color"
+                    value={room.grid.background}
+                    onChange={(event) =>
+                      updateBuildRoom(
+                        (current) => ({
+                          ...current,
+                          grid: { ...current.grid, background: event.target.value }
+                        }),
+                        (current) => {
+                          const previous = current.grid.background;
+                          return (nextRoom) => ({ ...nextRoom, grid: { ...nextRoom.grid, background: previous } });
+                        }
+                      )
+                    }
+                  />
+                </label>
+              </section>
+
+              <section className="tool-card build-card">
+                <div className="panel-heading">
+                  <h2>Build Mode</h2>
+                  <span>{buildMode ? buildTool : "Off"}</span>
+                </div>
+                <button
+                  className={buildMode ? "primary-action compact" : "secondary-action compact"}
+                  onClick={() => setBuildMode((current) => !current)}
+                  type="button"
+                >
+                  {buildMode ? "Exit Build" : "Enter Build"}
+                </button>
+                <div className="build-tool-tabs" aria-label="Build tools">
+                  {(["draw", "wall", "background"] as BuildTool[]).map((tool) => (
+                    <button
+                      className={buildTool === tool ? "selected" : ""}
+                      key={tool}
+                      onClick={() => {
+                        setBuildTool(tool);
+                        setBuildMode(true);
+                      }}
+                      type="button"
+                    >
+                      {tool === "draw" ? "Draw" : tool === "wall" ? "Walls" : "Background"}
+                    </button>
+                  ))}
+                </div>
+
+                {buildTool === "draw" || buildTool === "wall" ? (
+                  <>
+                    <div>
+                      <span className="field-label">Build color</span>
+                      <div className="color-picker build-colors" aria-label="Choose build color">
+                        {BUILD_COLORS.map((candidate) => (
+                          <button
+                            aria-label={`Use ${candidate}`}
+                            className={candidate === buildColor ? "selected" : ""}
+                            key={candidate}
+                            onClick={() => setBuildColor(candidate)}
+                            style={{ background: candidate }}
+                            type="button"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <label>
+                      Custom color
+                      <input type="color" value={buildColor} onChange={(event) => setBuildColor(event.target.value)} />
+                    </label>
+                  </>
+                ) : null}
+
+                {buildTool === "background" ? (
+                  <>
+                    <label>
+                      Upload battlefield
+                      <input
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        onChange={(event) => handleBackgroundImage(event.target.files?.[0] ?? null)}
+                        type="file"
+                      />
+                    </label>
+                    <label>
+                      Battlefield image URL
+                      <input value={backgroundUrl} onChange={(event) => setBackgroundUrl(event.target.value)} />
+                    </label>
+                    <button className="secondary-action compact" disabled={!backgroundUrl.trim()} onClick={applyBackgroundUrl} type="button">
+                      Use image URL
+                    </button>
+                    {room.grid.backgroundImage ? (
+                      <>
+                        <div className="background-preview">
+                          <img alt="Battlefield background preview" src={room.grid.backgroundImage.imageUrl} />
+                          <strong>{room.grid.backgroundImage.imageName ?? "Battlefield background"}</strong>
+                        </div>
+                        <div className="range-grid">
+                          <label>
+                            X
+                            <input
+                              type="number"
+                              value={room.grid.backgroundImage.positionX}
+                              onChange={(event) => updateBattleMapBackground({ positionX: Number(event.target.value) })}
+                            />
+                          </label>
+                          <label>
+                            Y
+                            <input
+                              type="number"
+                              value={room.grid.backgroundImage.positionY}
+                              onChange={(event) => updateBattleMapBackground({ positionY: Number(event.target.value) })}
+                            />
+                          </label>
+                        </div>
+                        <label>
+                          Scale
+                          <input
+                            min={20}
+                            max={300}
+                            type="range"
+                            value={room.grid.backgroundImage.scale}
+                            onChange={(event) => updateBattleMapBackground({ scale: Number(event.target.value) })}
+                          />
+                        </label>
+                        <label>
+                          Opacity
+                          <input
+                            min={10}
+                            max={100}
+                            type="range"
+                            value={room.grid.backgroundImage.opacity}
+                            onChange={(event) => updateBattleMapBackground({ opacity: Number(event.target.value) })}
+                          />
+                        </label>
+                        <div className="dice-row">
+                          <button
+                            className="secondary-action compact"
+                            onClick={() =>
+                              updateBattleMapBackground({
+                                ...DEFAULT_BACKGROUND_IMAGE_SETTINGS
+                              })
+                            }
+                            type="button"
+                          >
+                            Reset
+                          </button>
+                          <button className="secondary-action compact danger" onClick={() => setBattleMapBackground(undefined)} type="button">
+                            Remove
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
+                    {backgroundError ? <p className="error-text">{backgroundError}</p> : null}
+                  </>
+                ) : null}
+
+                <div className="dice-row">
+                  <button className="secondary-action compact" disabled={!buildUndoCount} onClick={undoBuildAction} type="button">
+                    Undo
+                  </button>
+                  <button
+                    className="secondary-action compact danger"
+                    disabled={!room.drawings.length}
+                    onClick={() =>
+                      updateBuildRoom(
+                        (current) => ({ ...current, drawings: [] }),
+                        (current) => {
+                          const previous = current.drawings;
+                          return (nextRoom) => ({ ...nextRoom, drawings: previous });
+                        }
+                      )
+                    }
+                    type="button"
+                  >
+                    Clear marks
+                  </button>
+                </div>
+              </section>
+            </>
           ) : null}
 
           <section>
@@ -655,21 +946,40 @@ export function Tabletop({ roomCode }: Props) {
           <div className="map-toolbar">
             <span>{room.grid.columns} x {room.grid.rows}</span>
             <span>{room.tokens.length} tokens</span>
-            <span>{drawMode ? "Drawing mode" : "Token mode"}</span>
+            <span>{buildMode ? `Build: ${buildTool === "wall" ? "Walls" : buildTool}` : "Token mode"}</span>
           </div>
           <div
-            className={drawMode ? "board draw-active" : "board"}
-            onPointerDown={startDraw}
-            onPointerMove={continueDraw}
-            onPointerUp={endDraw}
+            className={buildMode ? "board build-active" : "board"}
+            onPointerDown={startBuildGesture}
+            onPointerMove={continueBuildGesture}
+            onPointerUp={endBuildGesture}
             style={{
               width: boardWidth,
               height: boardHeight,
-              backgroundColor: room.grid.background,
-              backgroundImage: `linear-gradient(to right, rgba(20, 20, 20, .18) 1px, transparent 1px), linear-gradient(to bottom, rgba(20, 20, 20, .18) 1px, transparent 1px)`,
-              backgroundSize: `${room.grid.cellSize}px ${room.grid.cellSize}px`
+              backgroundColor: room.grid.background
             }}
           >
+            {room.grid.backgroundImage ? (
+              <img
+                alt=""
+                className="map-background-image"
+                draggable={false}
+                src={room.grid.backgroundImage.imageUrl}
+                style={{
+                  left: room.grid.backgroundImage.positionX,
+                  opacity: room.grid.backgroundImage.opacity / 100,
+                  top: room.grid.backgroundImage.positionY,
+                  width: boardWidth * (room.grid.backgroundImage.scale / 100)
+                }}
+              />
+            ) : null}
+            <div
+              className="grid-layer"
+              style={{
+                backgroundImage: `linear-gradient(to right, rgba(20, 20, 20, .18) 1px, transparent 1px), linear-gradient(to bottom, rgba(20, 20, 20, .18) 1px, transparent 1px)`,
+                backgroundSize: `${room.grid.cellSize}px ${room.grid.cellSize}px`
+              }}
+            />
             <svg className="drawing-layer" height={boardHeight} width={boardWidth}>
               {[...room.drawings, ...(draftLine ? [draftLine] : [])].map((line) => (
                 <polyline
@@ -679,7 +989,7 @@ export function Tabletop({ roomCode }: Props) {
                   stroke={line.color}
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeWidth="5"
+                  strokeWidth={line.kind === "wall" ? "8" : "5"}
                 />
               ))}
             </svg>
@@ -689,7 +999,7 @@ export function Tabletop({ roomCode }: Props) {
                 className={canControl(token) ? "token controllable" : "token"}
                 key={token.id}
                 onPointerDown={(event) => {
-                  if (drawMode) return;
+                  if (buildMode) return;
                   setSelectedTokenId(token.id);
                   setDraggingToken(token.id);
                   event.currentTarget.setPointerCapture(event.pointerId);
