@@ -1,0 +1,15 @@
+[Unit]
+Description=DND Battle Room Next.js app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/DND
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run start -- -H 0.0.0.0 -p 3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
