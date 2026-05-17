@@ -47,6 +47,25 @@ test("joins an existing room by code", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Room JOIN01" })).toBeVisible();
 });
 
+test("assigns unique random colors to room members", async ({ request }) => {
+  const roomCode = `COLOR${Date.now().toString(36).slice(-5)}`.toUpperCase();
+
+  for (let index = 0; index < 8; index += 1) {
+    const response = await request.post(`/api/rooms/${roomCode}`, {
+      data: {
+        id: `guest-${index}`,
+        nickname: `Guest ${index}`,
+        color: "#ffffff"
+      }
+    });
+
+    expect(response.ok()).toBeTruthy();
+    const room = await response.json();
+    const colors = room.members.map((member: { color: string }) => member.color.toLowerCase());
+    expect(new Set(colors).size).toBe(colors.length);
+  }
+});
+
 test("uploads and removes a custom token picture", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Create new room" }).click();

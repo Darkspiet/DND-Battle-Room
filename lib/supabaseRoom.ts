@@ -1,6 +1,7 @@
 "use client";
 
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
+import { resolvePlayerColor } from "./playerColors";
 import type { GuestProfile, RoomState } from "./types";
 import { createEmptyRoom, saveRoom, toMember } from "./storage";
 
@@ -29,16 +30,18 @@ function getClient() {
 
 function joinState(room: RoomState, profile: GuestProfile): RoomState {
   const now = Date.now();
-  const hasMember = room.members.some((member) => member.id === profile.id);
+  const currentMember = room.members.find((member) => member.id === profile.id);
   const role = room.dmId === profile.id ? "dm" : "player";
+  const color = resolvePlayerColor(room.members, profile.id, currentMember?.color);
+  const assignedProfile = { ...profile, color };
 
   return {
     ...room,
-    members: hasMember
+    members: currentMember
       ? room.members.map((member) =>
-          member.id === profile.id ? { ...member, ...profile, role: member.role, lastSeen: now } : member
+          member.id === profile.id ? { ...member, ...assignedProfile, role: member.role, lastSeen: now } : member
         )
-      : [...room.members, toMember(profile, role, now)]
+      : [...room.members, toMember(assignedProfile, role, now)]
   };
 }
 

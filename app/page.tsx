@@ -4,8 +4,6 @@ import { FormEvent, useEffect, useState } from "react";
 import { addRecentRoom, getGuestProfile, getRecentRooms, saveGuestProfile } from "../lib/storage";
 import type { GuestProfile } from "../lib/types";
 
-const COLORS = ["#e85d75", "#2fbf71", "#3d8bfd", "#f2b84b", "#9b6ef3", "#16a3a3"];
-
 function createRoomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
@@ -13,7 +11,6 @@ function createRoomCode() {
 export default function HomePage() {
   const [profile, setProfile] = useState<GuestProfile | null>(null);
   const [nickname, setNickname] = useState("Adventurer");
-  const [color, setColor] = useState(COLORS[0]);
   const [roomCode, setRoomCode] = useState("");
   const [recentRooms, setRecentRooms] = useState<string[]>([]);
 
@@ -21,20 +18,19 @@ export default function HomePage() {
     const loaded = getGuestProfile();
     setProfile(loaded);
     setNickname(loaded.nickname);
-    setColor(loaded.color);
     setRecentRooms(getRecentRooms());
   }, []);
 
   useEffect(() => {
     if (profile) {
-      saveGuestProfile({ ...profile, nickname, color });
+      saveGuestProfile({ ...profile, nickname });
     }
-  }, [color, nickname, profile]);
+  }, [nickname, profile]);
 
   function saveAndGo(code: string) {
     const cleanCode = code.trim().toUpperCase();
     const currentProfile = profile ?? getGuestProfile();
-    saveGuestProfile({ ...currentProfile, nickname: nickname.trim() || "Adventurer", color });
+    saveGuestProfile({ ...currentProfile, nickname: nickname.trim() || "Adventurer" });
     addRecentRoom(cleanCode);
     window.location.assign(`room/${cleanCode}`);
   }
@@ -58,7 +54,7 @@ export default function HomePage() {
         </div>
         <div className="topbar-status">
           <span>Guest mode</span>
-          <strong style={{ color }}>{nickname.slice(0, 1).toUpperCase()}</strong>
+          <strong style={{ color: profile?.color }}>{nickname.slice(0, 1).toUpperCase()}</strong>
         </div>
       </header>
 
@@ -87,22 +83,6 @@ export default function HomePage() {
               Nickname
               <input value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={28} />
             </label>
-
-            <div>
-              <span className="field-label">Color ring</span>
-              <div className="color-picker" aria-label="Choose profile color">
-                {COLORS.map((candidate) => (
-                  <button
-                    aria-label={`Use ${candidate}`}
-                    className={candidate === color ? "selected" : ""}
-                    key={candidate}
-                    onClick={() => setColor(candidate)}
-                    style={{ background: candidate }}
-                    type="button"
-                  />
-                ))}
-              </div>
-            </div>
           </section>
 
           <section className="tool-card action-card primary-card">

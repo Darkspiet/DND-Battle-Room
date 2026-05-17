@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { assignPlayerColor, resolvePlayerColor } from "../../../../lib/playerColors";
 import type { GuestProfile, RoomMember, RoomState } from "../../../../lib/types";
 
 type Store = Map<string, RoomState>;
@@ -21,11 +22,12 @@ function toMember(profile: GuestProfile, role: RoomMember["role"], now = Date.no
 
 function createRoom(roomCode: string, profile: GuestProfile): RoomState {
   const now = Date.now();
+  const assignedProfile = { ...profile, color: assignPlayerColor([]) };
   return {
     roomCode,
     createdAt: now,
-    dmId: profile.id,
-    members: [toMember(profile, "dm", now)],
+    dmId: assignedProfile.id,
+    members: [toMember(assignedProfile, "dm", now)],
     grid: {
       rows: 18,
       columns: 26,
@@ -81,14 +83,16 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ro
 
   const now = Date.now();
   const role = existing.dmId === profile.id ? "dm" : "player";
-  const hasMember = existing.members.some((member) => member.id === profile.id);
+  const currentMember = existing.members.find((member) => member.id === profile.id);
+  const color = resolvePlayerColor(existing.members, profile.id, currentMember?.color);
+  const assignedProfile = { ...profile, color };
   const room = {
     ...existing,
-    members: hasMember
+    members: currentMember
       ? existing.members.map((member) =>
-          member.id === profile.id ? { ...member, ...profile, role: member.role, lastSeen: now } : member
+          member.id === profile.id ? { ...member, ...assignedProfile, role: member.role, lastSeen: now } : member
         )
-      : [...existing.members, toMember(profile, role, now)]
+      : [...existing.members, toMember(assignedProfile, role, now)]
   };
 
   store.set(roomCode, room);

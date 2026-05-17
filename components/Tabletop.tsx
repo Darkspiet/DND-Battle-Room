@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { PointerEvent, useEffect, useRef, useState } from "react";
 import { rollDice } from "../lib/dice";
-import { createEntityId, getGuestProfile, loadRoom, saveRoom } from "../lib/storage";
+import { createEntityId, getGuestProfile, loadRoom, saveGuestProfile, saveRoom } from "../lib/storage";
 import { hasSupabaseConfig, joinSupabaseRoom, saveSupabaseRoom, subscribeToSupabaseRoom } from "../lib/supabaseRoom";
 import { prepareBattleMapImage, prepareTokenImage } from "../lib/tokenImages";
 import type {
@@ -139,10 +139,19 @@ export function Tabletop({ roomCode }: Props) {
   const channelRef = useRef<BroadcastChannel | null>(null);
   const buildUndoRef = useRef<BuildUndo[]>([]);
 
+  function syncProfileFromRoom(nextRoom: RoomState, fallbackProfile: GuestProfile) {
+    const assignedMember = nextRoom.members.find((member) => member.id === fallbackProfile.id);
+    const nextProfile = assignedMember
+      ? { id: assignedMember.id, nickname: assignedMember.nickname, color: assignedMember.color }
+      : fallbackProfile;
+    setProfile(nextProfile);
+    saveGuestProfile(nextProfile);
+  }
+
   useEffect(() => {
     const loadedProfile = getGuestProfile();
-    setProfile(loadedProfile);
     const localRoom = loadRoom(roomCode, loadedProfile);
+    syncProfileFromRoom(localRoom, loadedProfile);
     setRoom(localRoom);
 
     if (hasSupabaseConfig()) {
@@ -152,6 +161,7 @@ export function Tabletop({ roomCode }: Props) {
           setSyncMode("supabase");
           setSyncError("");
           setRoom(supabaseRoom);
+          syncProfileFromRoom(supabaseRoom, loadedProfile);
         })
         .catch((error) => {
           setSyncError(error instanceof Error ? error.message : "Supabase sync failed.");
@@ -173,6 +183,7 @@ export function Tabletop({ roomCode }: Props) {
         setSyncMode("server");
         setSyncError("");
         setRoom(serverRoom);
+        syncProfileFromRoom(serverRoom, loadedProfile);
         saveRoom(serverRoom);
       })
       .catch(() => {
@@ -310,8 +321,8 @@ export function Tabletop({ roomCode }: Props) {
   }
 
   function addToken() {
-    if (!profile || !room) return;
-    const owner = isDm ? profile : profile;
+    if (!profile || !room || !currentMember) return;
+    const owner = currentMember;
     const token: Token = {
       id: createEntityId("token"),
       name: newToken.name.trim() || "Token",

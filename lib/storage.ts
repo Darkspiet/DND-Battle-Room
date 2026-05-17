@@ -1,19 +1,18 @@
 "use client";
 
 import type { GuestProfile, RoomMember, RoomState } from "./types";
+import { assignPlayerColor, PLAYER_COLORS, resolvePlayerColor } from "./playerColors";
 
 const PROFILE_KEY = "dnd-battle-room-profile";
 const ROOM_PREFIX = "dnd-battle-room:";
 const RECENT_ROOMS_KEY = "dnd-battle-room-recents";
-const FALLBACK_COLORS = ["#e85d75", "#2fbf71", "#3d8bfd", "#f2b84b", "#9b6ef3", "#16a3a3"];
-
 function createId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
 }
 
 export function getGuestProfile(): GuestProfile {
   if (typeof window === "undefined") {
-    return { id: "server", nickname: "Adventurer", color: FALLBACK_COLORS[0] };
+    return { id: "server", nickname: "Adventurer", color: PLAYER_COLORS[0] };
   }
 
   const stored = window.localStorage.getItem(PROFILE_KEY);
@@ -24,7 +23,7 @@ export function getGuestProfile(): GuestProfile {
   const profile = {
     id: createId("guest"),
     nickname: "Adventurer",
-    color: FALLBACK_COLORS[Math.floor(Math.random() * FALLBACK_COLORS.length)]
+    color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)]
   };
   saveGuestProfile(profile);
   return profile;
@@ -38,11 +37,12 @@ export function saveGuestProfile(profile: GuestProfile) {
 
 export function createEmptyRoom(roomCode: string, profile: GuestProfile): RoomState {
   const now = Date.now();
+  const assignedProfile = { ...profile, color: assignPlayerColor([]) };
   return {
     roomCode,
     createdAt: now,
-    dmId: profile.id,
-    members: [toMember(profile, "dm", now)],
+    dmId: assignedProfile.id,
+    members: [toMember(assignedProfile, "dm", now)],
     grid: {
       rows: 18,
       columns: 26,
@@ -79,11 +79,13 @@ export function loadRoom(roomCode: string, profile: GuestProfile): RoomState {
   const parsed = JSON.parse(stored) as RoomState;
   const role = parsed.dmId === profile.id ? "dm" : "player";
   const existing = parsed.members.find((member) => member.id === profile.id);
+  const color = resolvePlayerColor(parsed.members, profile.id, existing?.color);
+  const assignedProfile = { ...profile, color };
   const members = existing
     ? parsed.members.map((member) =>
-        member.id === profile.id ? { ...member, ...profile, role: member.role, lastSeen: Date.now() } : member
+        member.id === profile.id ? { ...member, ...assignedProfile, role: member.role, lastSeen: Date.now() } : member
       )
-    : [...parsed.members, toMember(profile, role)];
+    : [...parsed.members, toMember(assignedProfile, role)];
 
   const next = {
     ...parsed,
