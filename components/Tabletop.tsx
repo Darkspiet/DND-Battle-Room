@@ -41,9 +41,19 @@ type SelectedBuildObject = { type: "wall" | "effect"; id: string } | null;
 type BuildObjectDrag =
   | { type: "wall"; id: string; start: BoardPoint; points: BoardPoint[]; moved: boolean }
   | { type: "effect"; id: string; start: BoardPoint; origin: BoardPoint; target: BoardPoint; moved: boolean };
+type TokenMovePayload = { tokenId: string; x: number; y: number; seq: number };
+type RealtimeMessage =
+  | { type: "room_snapshot"; room: RoomState }
+  | { type: "token_move_preview" | "token_move_commit"; token: Token; seq: number; profileId: string }
+  | { type: "sync_error"; message: string };
 
 function roomApiPath(roomCode: string) {
   return `../../api/rooms/${roomCode}`;
+}
+
+function roomWebSocketUrl() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/ws`;
 }
 
 function pointDistance(first: BoardPoint, second: BoardPoint) {
@@ -133,11 +143,19 @@ export function Tabletop({ roomCode }: Props) {
   });
   const [imageError, setImageError] = useState("");
   const [backgroundError, setBackgroundError] = useState("");
-  const [syncMode, setSyncMode] = useState<"connecting" | "supabase" | "server" | "local">("connecting");
+  const [syncMode, setSyncMode] = useState<"connecting" | "supabase" | "websocket" | "server" | "local">("connecting");
   const [syncError, setSyncError] = useState("");
   const boardRef = useRef<HTMLDivElement | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const buildUndoRef = useRef<BuildUndo[]>([]);
+  const tokenMoveSeqRef = useRef(0);
+  const tokenSequenceRef = useRef<Record<string, number>>({});
+  const tokenPreviewThrottleRef = useRef<{ lastSentAt: number; timer: number | null; pending: TokenMovePayload | null }>({
+    lastSentAt: 0,
+    timer: null,
+    pending: null
+  });
 
   function syncProfileFromRoom(nextRoom: RoomState, fallbackProfile: GuestProfile) {
     const assignedMember = nextRoom.members.find((member) => member.id === fallbackProfile.id);
@@ -149,14 +167,41 @@ export function Tabletop({ roomCode }: Props) {
   }
 
   useEffect(() => {
+    let cancelled = false;
     const loadedProfile = getGuestProfile();
     const localRoom = loadRoom(roomCode, loadedProfile);
     syncProfileFromRoom(localRoom, loadedProfile);
     setRoom(localRoom);
 
+    function joinServerFallback() {
+      fetch(roomApiPath(roomCode), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loadedProfile)
+      })
+        .then((response) => {
+          if (!response.ok) throw new Error("Server room join failed");
+          return response.json() as Promise<RoomState>;
+        })
+        .then((serverRoom) => {
+          if (cancelled) return;
+          setSyncMode("server");
+          setSyncError("");
+          setRoom(serverRoom);
+          syncProfileFromRoom(serverRoom, loadedProfile);
+          saveRoom(serverRoom);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setSyncError("Development server sync is unavailable. Using local browser storage.");
+          setSyncMode("local");
+        });
+    }
+
     if (hasSupabaseConfig()) {
       joinSupabaseRoom(roomCode, loadedProfile)
         .then((supabaseRoom) => {
+          if (cancelled) return;
           if (!supabaseRoom) throw new Error("Supabase is not configured.");
           setSyncMode("supabase");
           setSyncError("");
@@ -164,32 +209,68 @@ export function Tabletop({ roomCode }: Props) {
           syncProfileFromRoom(supabaseRoom, loadedProfile);
         })
         .catch((error) => {
+          if (cancelled) return;
           setSyncError(error instanceof Error ? error.message : "Supabase sync failed.");
           setSyncMode("local");
         });
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
-    fetch(roomApiPath(roomCode), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(loadedProfile)
-    })
-      .then((response) => {
-        if (!response.ok) throw new Error("Server room join failed");
-        return response.json() as Promise<RoomState>;
-      })
-      .then((serverRoom) => {
-        setSyncMode("server");
+    const socket = new WebSocket(roomWebSocketUrl());
+    wsRef.current = socket;
+    let opened = false;
+
+    socket.addEventListener("open", () => {
+      opened = true;
+      socket.send(JSON.stringify({ type: "join_room", roomCode, profile: loadedProfile }));
+    });
+
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(event.data) as RealtimeMessage;
+      if (message.type === "room_snapshot") {
+        setSyncMode("websocket");
         setSyncError("");
-        setRoom(serverRoom);
-        syncProfileFromRoom(serverRoom, loadedProfile);
-        saveRoom(serverRoom);
-      })
-      .catch(() => {
-        setSyncError("Development server sync is unavailable. Using local browser storage.");
-        setSyncMode("local");
-      });
+        setRoom(message.room);
+        syncProfileFromRoom(message.room, loadedProfile);
+        saveRoom(message.room);
+        return;
+      }
+      if (message.type === "token_move_preview" || message.type === "token_move_commit") {
+        const previousSeq = tokenSequenceRef.current[message.token.id] ?? 0;
+        if (message.seq < previousSeq) return;
+        tokenSequenceRef.current = { ...tokenSequenceRef.current, [message.token.id]: message.seq };
+        setRoom((current) =>
+          current
+            ? {
+                ...current,
+                tokens: current.tokens.map((token) => (token.id === message.token.id ? { ...token, ...message.token } : token))
+              }
+            : current
+        );
+        return;
+      }
+      if (message.type === "sync_error") {
+        setSyncError(message.message);
+      }
+    });
+
+    socket.addEventListener("close", () => {
+      if (cancelled) return;
+      wsRef.current = null;
+      setSyncError(opened ? "Realtime connection dropped. Falling back to server polling." : "Realtime server unavailable. Falling back to server polling.");
+      joinServerFallback();
+    });
+
+    socket.addEventListener("error", () => {
+      socket.close();
+    });
+
+    return () => {
+      cancelled = true;
+      socket.close();
+    };
   }, [roomCode]);
 
   useEffect(() => {
@@ -239,15 +320,20 @@ export function Tabletop({ roomCode }: Props) {
     const channel = new BroadcastChannel(`dnd-room-${roomCode}`);
     channelRef.current = channel;
     channel.onmessage = (event: MessageEvent<RoomState>) => {
+      if (syncMode === "websocket") return;
       setRoom(event.data);
     };
     return () => channel.close();
-  }, [roomCode]);
+  }, [roomCode, syncMode]);
 
   useEffect(() => {
     if (!room) return;
+    if (syncMode === "websocket") {
+      const timeout = window.setTimeout(() => saveRoom(room), 500);
+      return () => window.clearTimeout(timeout);
+    }
     saveRoom(room);
-  }, [room]);
+  }, [room, syncMode]);
 
   useEffect(() => {
     if (!buildMode || !isDm) return;
@@ -268,7 +354,15 @@ export function Tabletop({ roomCode }: Props) {
 
   function persistRoom(next: RoomState) {
     saveRoom(next);
-    channelRef.current?.postMessage(next);
+    if (syncMode !== "websocket") {
+      channelRef.current?.postMessage(next);
+    }
+    if (syncMode === "websocket") {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "room_patch", roomCode, room: next, tokenSequences: tokenSequenceRef.current }));
+      }
+      return;
+    }
     if (syncMode === "server") {
       fetch(roomApiPath(roomCode), {
         method: "PUT",
@@ -591,7 +685,85 @@ export function Tabletop({ roomCode }: Props) {
     const point = getBoardPointFromClient(event.clientX, event.clientY);
     const x = Math.max(0, Math.min(room.grid.columns - token.size, Math.floor(point.x / room.grid.cellSize)));
     const y = Math.max(0, Math.min(room.grid.rows - token.size, Math.floor(point.y / room.grid.cellSize)));
-    updateToken(token.id, { x, y });
+    if (syncMode !== "websocket") {
+      updateToken(token.id, { x, y });
+      return;
+    }
+    if (token.x === x && token.y === y) return;
+
+    const payload = { tokenId: token.id, x, y, seq: nextTokenMoveSeq(token.id) };
+    applyLocalTokenMove(payload);
+    queueTokenMovePreview(payload);
+  }
+
+  function endTokenMove(event: PointerEvent<HTMLDivElement>, token: Token) {
+    if (draggingToken !== token.id) return;
+    if (syncMode === "websocket" && room && canControl(token)) {
+      const point = getBoardPointFromClient(event.clientX, event.clientY);
+      const payload = {
+        tokenId: token.id,
+        x: Math.max(0, Math.min(room.grid.columns - token.size, Math.floor(point.x / room.grid.cellSize))),
+        y: Math.max(0, Math.min(room.grid.rows - token.size, Math.floor(point.y / room.grid.cellSize))),
+        seq: nextTokenMoveSeq(token.id)
+      };
+      applyLocalTokenMove(payload);
+      flushTokenMovePreview();
+      sendTokenMove("token_move_commit", payload);
+    }
+    setDraggingToken(null);
+  }
+
+  function nextTokenMoveSeq(tokenId: string) {
+    tokenMoveSeqRef.current = Math.max(tokenMoveSeqRef.current + 1, Date.now());
+    tokenSequenceRef.current = { ...tokenSequenceRef.current, [tokenId]: tokenMoveSeqRef.current };
+    return tokenMoveSeqRef.current;
+  }
+
+  function applyLocalTokenMove(payload: TokenMovePayload) {
+    setRoom((current) =>
+      current
+        ? {
+            ...current,
+            tokens: current.tokens.map((item) => (item.id === payload.tokenId ? { ...item, x: payload.x, y: payload.y } : item))
+          }
+        : current
+    );
+  }
+
+  function sendTokenMove(type: "token_move_preview" | "token_move_commit", payload: TokenMovePayload) {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type, roomCode, ...payload }));
+  }
+
+  function queueTokenMovePreview(payload: TokenMovePayload) {
+    const throttle = tokenPreviewThrottleRef.current;
+    const now = Date.now();
+    const elapsed = now - throttle.lastSentAt;
+
+    if (elapsed >= 50) {
+      throttle.lastSentAt = now;
+      sendTokenMove("token_move_preview", payload);
+      return;
+    }
+
+    throttle.pending = payload;
+    if (throttle.timer) return;
+    throttle.timer = window.setTimeout(() => {
+      const pending = tokenPreviewThrottleRef.current.pending;
+      tokenPreviewThrottleRef.current.pending = null;
+      tokenPreviewThrottleRef.current.timer = null;
+      tokenPreviewThrottleRef.current.lastSentAt = Date.now();
+      if (pending) sendTokenMove("token_move_preview", pending);
+    }, 50 - elapsed);
+  }
+
+  function flushTokenMovePreview() {
+    const throttle = tokenPreviewThrottleRef.current;
+    if (throttle.timer) {
+      window.clearTimeout(throttle.timer);
+    }
+    throttle.timer = null;
+    throttle.pending = null;
   }
 
   function startBuildGesture(event: PointerEvent<HTMLDivElement>) {
@@ -758,14 +930,16 @@ export function Tabletop({ roomCode }: Props) {
           <p>{isDm ? "You are the DM. You can edit the map and all tokens." : "You are a player. You control your own tokens."}</p>
         </div>
         <div className="room-actions">
-          <span className={syncMode === "server" || syncMode === "supabase" ? "sync-badge online" : "sync-badge"}>
+          <span className={syncMode === "server" || syncMode === "supabase" || syncMode === "websocket" ? "sync-badge online" : "sync-badge"}>
             {syncMode === "supabase"
               ? "Supabase realtime"
-              : syncMode === "server"
-                ? "Dev server sync"
-                : syncMode === "local"
-                  ? "Local only"
-                  : "Connecting"}
+              : syncMode === "websocket"
+                ? "Realtime sync"
+                : syncMode === "server"
+                  ? "Dev server sync"
+                  : syncMode === "local"
+                    ? "Local only"
+                    : "Connecting"}
           </span>
           <button
             className="secondary-action"
@@ -1414,7 +1588,8 @@ export function Tabletop({ roomCode }: Props) {
                 onPointerMove={(event) => {
                   if (draggingToken === token.id) moveToken(event, token);
                 }}
-                onPointerUp={() => setDraggingToken(null)}
+                onPointerUp={(event) => endTokenMove(event, token)}
+                onPointerCancel={(event) => endTokenMove(event, token)}
                 style={{
                   borderColor: token.color,
                   height: token.size * room.grid.cellSize - 8,

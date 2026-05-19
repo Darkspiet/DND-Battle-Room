@@ -39,10 +39,10 @@ journalctl -u dnd-battle-room -f
 systemctl restart dnd-battle-room
 ```
 
-The installed service uses:
+The installed service uses the custom Next.js server with the built-in WebSocket sync endpoint:
 
 ```bash
-npm run start -- -H 0.0.0.0 -p 3000
+HOSTNAME=0.0.0.0 PORT=3000 npm run start
 ```
 
 That makes the app available from this LXC at:
@@ -81,7 +81,7 @@ ingress:
   - service: http_status:404
 ```
 
-The app is a normal HTTP Next.js service. No special WebSocket tunnel setup is needed for the current server-sync mode.
+The app is a normal HTTP Next.js service with a `/ws` WebSocket endpoint on the same host and port.
 
 ## Verification
 
