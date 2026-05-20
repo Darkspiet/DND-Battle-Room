@@ -13,9 +13,12 @@ Open `http://localhost:3000`.
 
 ## Current v1
 
-- Create or join a room by code.
-- Nickname plus color guest identity.
-- First visitor to a room becomes DM.
+- Start screen with separate DM login and player join paths.
+- Supabase Auth-ready DM dashboard with a local development fallback.
+- DM-created named rooms with join codes.
+- Player pre-join profile with nickname, color, and optional avatar.
+- Shared public token/object preset library for DM build prep.
+- DM account/profile is assigned as room owner when a room is created.
 - Configurable square battle grid.
 - Draggable tokens with owner-colored rings.
 - DM can manage every token; players control their own tokens.

@@ -1,23 +1,32 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
 
-test("creates a room and shows the tabletop", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByRole("button", { name: "Create new room" })).toBeVisible();
+async function openDmTool(page: Page, name: string) {
+  const menu = page.locator(".dm-tools-menu");
+  if ((await menu.getAttribute("open")) === null) {
+    await menu.locator("summary").click();
+  }
+  await page.getByRole("button", { name }).click();
+}
 
-  await page.getByRole("button", { name: "Create new room" }).click();
+test("creates a room and shows the tabletop", async ({ page }) => {
+  await page.goto("/dm/dashboard");
+  await expect(page.getByRole("button", { name: "Create saved room" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
   await expect(page).toHaveURL(/\/room\/[A-Z0-9]+$/);
   await expect(page.getByRole("heading", { name: /^Room [A-Z0-9]+$/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Dice" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Tokens" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Build Mode" })).toBeVisible();
+  await expect(page.getByText("DM Tools")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Combat" })).toHaveCount(0);
   await expect(page.locator(".board")).toBeVisible();
 });
 
 test("adds a token and rolls dice", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
   await page.getByRole("button", { name: "Add token" }).click();
   await expect(page.locator(".token")).toHaveCount(1);
@@ -38,10 +47,56 @@ test("adds a token and rolls dice", async ({ page }) => {
   await expect(page.locator(".roll-log article").first()).toContainText("d20");
 });
 
-test("joins an existing room by code", async ({ page }) => {
-  await page.goto("/");
+test("runs assisted initiative combat order", async ({ page }) => {
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
+
+  await page.getByRole("button", { name: "Add token" }).click();
+  await page.getByLabel("Token name").fill("Goblin");
+  await page.getByRole("button", { name: "Add token" }).click();
+
+  await openDmTool(page, "Combat controls");
+  await page.getByRole("button", { name: "Start combat" }).click();
+  await expect(page.getByRole("heading", { name: "Roll for initiative" })).toBeVisible();
+  await expect(page.locator(".initiative-submit-list li")).toHaveCount(2);
+
+  await expect(page.locator(".initiative-focus-card")).toContainText("Hero");
+  await page.getByLabel("Rolled at table").fill("18");
+  await page.getByRole("button", { name: "Submit" }).click();
+
+  await expect(page.locator(".initiative-focus-card")).toContainText("Goblin");
+  await page.getByLabel("Rolled at table").fill("12");
+  await page.getByRole("button", { name: "Submit" }).click();
+
+  await expect(page.locator(".initiative-submit-list li").first()).toContainText("18 initiative");
+  await page.getByRole("button", { name: "Begin round" }).click();
+  await expect(page.locator(".map-toolbar")).toContainText("Round 1: Hero");
+  await expect(page.locator(".turn-label")).toContainText("Hero's turn");
+
+  await openDmTool(page, "Combat controls");
+  await page.getByRole("button", { name: "Next turn" }).click();
+  await expect(page.locator(".active-turn-card")).toContainText("Goblin");
+
+  await page.getByRole("button", { name: "Next turn" }).click();
+  await expect(page.locator(".map-toolbar")).toContainText("Round 2: Hero");
+});
+
+test("joins an existing room by code through player profile", async ({ page, request }) => {
+  await request.post("/api/rooms/JOIN01", {
+    data: {
+      id: "dm-join-test",
+      nickname: "Join Test DM",
+      color: "#b7394b"
+    }
+  });
+
+  await page.goto("/join");
   await page.getByLabel("Room code").fill("JOIN01");
-  await page.getByRole("button", { name: "Join room" }).click();
+  await page.getByRole("button", { name: "Join game" }).click();
+
+  await expect(page).toHaveURL(/\/join\/JOIN01$/);
+  await page.getByLabel("Player name").fill("Player One");
+  await page.getByRole("button", { name: "Enter lobby" }).click();
 
   await expect(page).toHaveURL(/\/room\/JOIN01$/);
   await expect(page.getByRole("heading", { name: "Room JOIN01" })).toBeVisible();
@@ -67,8 +122,8 @@ test("assigns unique random colors to room members", async ({ request }) => {
 });
 
 test("uploads and removes a custom token picture", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
   await page.getByLabel("Token picture").first().setInputFiles(path.join(process.cwd(), "tests/fixtures/token-picture.png"));
   await expect(page.locator(".token-preview img")).toBeVisible();
@@ -84,10 +139,10 @@ test("uploads and removes a custom token picture", async ({ page }) => {
 });
 
 test("uses build mode drawing with keyboard undo", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
-  await page.getByRole("button", { name: "Enter Build" }).click();
+  await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Draw" }).click();
   await page.getByLabel("Use #2563eb").click();
 
@@ -108,10 +163,10 @@ test("uses build mode drawing with keyboard undo", async ({ page }) => {
 });
 
 test("adds snapped visual walls in build mode", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
-  await page.getByRole("button", { name: "Enter Build" }).click();
+  await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Walls" }).click();
 
   const board = page.locator(".board");
@@ -135,10 +190,10 @@ test("adds snapped visual walls in build mode", async ({ page }) => {
 });
 
 test("selects edits drags and deletes a wall object", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
-  await page.getByRole("button", { name: "Enter Build" }).click();
+  await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Walls" }).click();
 
   const board = page.locator(".board");
@@ -172,10 +227,10 @@ test("selects edits drags and deletes a wall object", async ({ page }) => {
 });
 
 test("sets battlefield backgrounds from upload and URL", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
-  await page.getByRole("button", { name: "Enter Build" }).click();
+  await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Background" }).click();
 
   const buildPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Build Mode" }) });
@@ -189,10 +244,10 @@ test("sets battlefield backgrounds from upload and URL", async ({ page }) => {
 });
 
 test("adds and undoes a colored circle effect", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
-  await page.getByRole("button", { name: "Enter Build" }).click();
+  await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Effects" }).click();
   await page.getByLabel("Use #7c3aed").click();
 
@@ -219,10 +274,10 @@ test("adds and undoes a colored circle effect", async ({ page }) => {
 });
 
 test("selects edits drags and deletes an effect object", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
-  await page.getByRole("button", { name: "Enter Build" }).click();
+  await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Effects" }).click();
 
   const buildPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Build Mode" }) });
@@ -263,10 +318,10 @@ test("selects edits drags and deletes an effect object", async ({ page }) => {
 });
 
 test("adds cone cube and line effects", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "Create new room" }).click();
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create saved room" }).click();
 
-  await page.getByRole("button", { name: "Enter Build" }).click();
+  await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Effects" }).click();
 
   const buildPanel = page.locator("section").filter({ has: page.getByRole("heading", { name: "Build Mode" }) });
@@ -300,8 +355,10 @@ test("adds cone cube and line effects", async ({ page }) => {
 
 test("relative room links preserve preview proxy prefixes", async ({ page }) => {
   await page.goto("/");
-  await page.evaluate(() => window.history.replaceState({}, "", "/proxy/3000/"));
 
-  const resolved = await page.evaluate(() => new URL("room/PROXY1", window.location.href).pathname);
+  const resolved = await page.evaluate(() => {
+    window.history.replaceState({}, "", "/proxy/3000/");
+    return new URL("room/PROXY1", window.location.href).pathname;
+  });
   expect(resolved).toBe("/proxy/3000/room/PROXY1");
 });
