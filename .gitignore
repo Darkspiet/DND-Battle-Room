@@ -8,3 +8,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 docs/future-ideas.md
+.env.production
+.env.example
+.data/dm-backend.json
