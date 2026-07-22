@@ -1,0 +1,9 @@
+DND Battle Room Workflow Rules
+
+This file is kept as a compatibility pointer for older references.
+
+The active project rules live in:
+
+docs/PROJECT_RULEBOOK.md
+
+Follow that file for ports, Playwright testing, Supabase setup, documentation rules, build steps, and service restart requirements.

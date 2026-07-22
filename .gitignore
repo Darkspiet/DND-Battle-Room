@@ -4,7 +4,11 @@ out
 dist
 .env
 .env.local
+.data
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 docs/future-ideas.md
+.env.production
+.gitignore
+.env.example

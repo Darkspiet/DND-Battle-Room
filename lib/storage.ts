@@ -54,7 +54,13 @@ export function createEmptyRoom(roomCode: string, profile: GuestProfile): RoomSt
     drawings: [],
     effects: [],
     rolls: [],
-    initiative: []
+    combat: {
+      active: false,
+      phase: "idle",
+      round: 1,
+      currentTurnIndex: 0,
+      entries: []
+    }
   };
 }
 
@@ -91,7 +97,31 @@ export function loadRoom(roomCode: string, profile: GuestProfile): RoomState {
     ...parsed,
     grid: { ...parsed.grid, feetPerCell: parsed.grid.feetPerCell ?? 5 },
     members,
-    effects: parsed.effects ?? []
+    effects: parsed.effects ?? [],
+    combat: parsed.combat ?? {
+      active: false,
+      phase: "idle",
+      round: 1,
+      currentTurnIndex: 0,
+      entries: (parsed.initiative ?? []).map((entry, index) => {
+        const token = parsed.tokens.find((item) => item.id === entry.tokenId);
+        return {
+          id: entry.id,
+          tokenId: entry.tokenId,
+          name: entry.name,
+          ownerId: token?.ownerId ?? parsed.dmId,
+          ownerName: token?.ownerName ?? "DM",
+          dexModifier: 0,
+          roll: entry.score,
+          total: entry.score,
+          mode: "manual" as const,
+          conditions: [],
+          submitted: true,
+          source: "manual" as const,
+          createdAt: parsed.createdAt + index
+        };
+      })
+    }
   };
   saveRoom(next);
   return next;

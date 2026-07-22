@@ -17,7 +17,7 @@ export function hasSupabaseConfig() {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 }
 
-function getClient() {
+export function getBrowserSupabaseClient() {
   if (!hasSupabaseConfig()) return null;
   if (!browserClient) {
     browserClient = createClient(
@@ -46,7 +46,7 @@ function joinState(room: RoomState, profile: GuestProfile): RoomState {
 }
 
 export async function joinSupabaseRoom(roomCode: string, profile: GuestProfile) {
-  const supabase = getClient();
+  const supabase = getBrowserSupabaseClient();
   if (!supabase) return null;
 
   const code = roomCode.toUpperCase();
@@ -67,7 +67,7 @@ export async function joinSupabaseRoom(roomCode: string, profile: GuestProfile) 
 }
 
 export async function saveSupabaseRoom(room: RoomState) {
-  const supabase = getClient();
+  const supabase = getBrowserSupabaseClient();
   if (!supabase) return room;
 
   const { data, error } = await supabase
@@ -91,7 +91,7 @@ export async function saveSupabaseRoom(room: RoomState) {
 }
 
 export function subscribeToSupabaseRoom(roomCode: string, onRoom: (room: RoomState) => void) {
-  const supabase = getClient();
+  const supabase = getBrowserSupabaseClient();
   if (!supabase) return null;
 
   const channel: RealtimeChannel = supabase

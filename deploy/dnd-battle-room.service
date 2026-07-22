@@ -9,6 +9,7 @@ WorkingDirectory=/root/DND
 Environment=NODE_ENV=production
 Environment=HOSTNAME=0.0.0.0
 Environment=PORT=3000
+EnvironmentFile=-/root/DND/.env.production
 ExecStart=/usr/bin/npm run start
 Restart=always
 RestartSec=5

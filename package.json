@@ -8,11 +8,17 @@
     "start": "node server.mjs",
     "lint": "tsc --noEmit -p tsconfig.typecheck.json",
     "test:e2e": "playwright test",
+    "test:e2e:local": "PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 playwright test",
+    "db:apply": "node scripts/apply-db-schema.mjs",
+    "install:production": "bash scripts/install-production.sh",
+    "verify": "npm run typecheck && npm run test:e2e && npm run build",
+    "deploy:restart": "systemctl restart dnd-battle-room",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.0",
     "next": "^15.5.18",
+    "pg": "^8.21.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "ws": "^8.20.1"
@@ -20,6 +26,7 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/node": "20.17.6",
+    "@types/pg": "^8.20.0",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
     "@types/ws": "^8.18.1",
