@@ -10,6 +10,7 @@ import {
   loadDMRooms,
   loadLibraryItems,
   saveDMRoom,
+  saveDMProfile,
   saveLibraryItem,
   signOutDM,
   type DMUser
@@ -28,6 +29,7 @@ export default function DMDashboardPage() {
   const [roomName, setRoomName] = useState("Friday Encounter");
   const [libraryKind, setLibraryKind] = useState<LibraryItemKind>("token");
   const [librarySearch, setLibrarySearch] = useState("");
+  const [profileDraft, setProfileDraft] = useState({ name: "", color: "#b7394b", avatarUrl: "", avatarName: "" });
   const [draft, setDraft] = useState({
     name: "Goblin Scout",
     category: "Creatures",
@@ -49,7 +51,8 @@ export default function DMDashboardPage() {
         return;
       }
       setDm(user);
-      saveGuestProfile({ id: user.id, nickname: user.name, color: "#b7394b" });
+      setProfileDraft({ name: user.name, color: user.color, avatarUrl: user.avatarUrl ?? "", avatarName: user.avatarName ?? "" });
+      saveGuestProfile({ id: user.id, nickname: user.name, color: user.color, avatarUrl: user.avatarUrl, avatarName: user.avatarName });
       Promise.all([loadDMRooms(user.id), loadLibraryItems()]).then(([loadedRooms, loadedLibrary]) => {
         setRooms(loadedRooms);
         setLibrary(loadedLibrary);
@@ -81,7 +84,7 @@ export default function DMDashboardPage() {
     };
     const saved = await saveDMRoom(room);
     setRooms((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
-    saveGuestProfile({ id: dm.id, nickname: dm.name, color: "#b7394b" });
+    saveGuestProfile({ id: dm.id, nickname: dm.name, color: dm.color, avatarUrl: dm.avatarUrl, avatarName: dm.avatarName });
     router.push(`/room/${saved.roomCode}`);
   }
 
@@ -99,6 +102,37 @@ export default function DMDashboardPage() {
       setDraft((current) => ({ ...current, imageName: image.imageName, imageUrl: image.imageUrl }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not use that image.");
+    }
+  }
+
+  async function handleProfileImage(file: File | null) {
+    if (!file) return;
+    try {
+      const image = await prepareTokenImage(file);
+      setError("");
+      setProfileDraft((current) => ({ ...current, avatarName: image.imageName, avatarUrl: image.imageUrl }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not use that profile image.");
+    }
+  }
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!dm) return;
+    try {
+      const saved = await saveDMProfile({
+        ...dm,
+        name: profileDraft.name.trim() || dm.username,
+        color: profileDraft.color,
+        avatarUrl: profileDraft.avatarUrl || undefined,
+        avatarName: profileDraft.avatarName || undefined
+      });
+      setDm(saved);
+      saveGuestProfile({ id: saved.id, nickname: saved.name, color: saved.color, avatarUrl: saved.avatarUrl, avatarName: saved.avatarName });
+      setStatus("DM profile updated.");
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not update the DM profile.");
     }
   }
 
@@ -143,15 +177,20 @@ export default function DMDashboardPage() {
   return (
     <main className="app-shell dashboard-shell">
       <header className="app-topbar">
-        <div>
+        <div className="dashboard-profile-header">
+          <div className="dm-profile-mark small" style={{ borderColor: dm.color }}>
+            {dm.avatarUrl ? <img alt="" src={dm.avatarUrl} /> : <span>{dm.name.slice(0, 1).toUpperCase()}</span>}
+          </div>
+          <div>
           <Link href="/" className="back-link">
             Start
           </Link>
-          <h1>DM Dashboard</h1>
-          <p>Signed in as {dm.name}</p>
+            <h1>{dm.name}</h1>
+            <p>@{dm.username} controls {rooms.length} saved rooms and {library.length} shared presets.</p>
+          </div>
         </div>
         <div className="room-actions">
-          {dm.isLocalFallback ? <span className="sync-badge">Local DM</span> : <span className="sync-badge online">Supabase Auth</span>}
+          <span className="sync-badge online">DM profile</span>
           <button className="secondary-action" onClick={logout} type="button">
             Sign out
           </button>
@@ -159,9 +198,9 @@ export default function DMDashboardPage() {
       </header>
 
       <section className="dashboard-grid">
-        <section className="tool-card">
+        <section className="tool-card rooms-command-card">
           <div className="panel-heading">
-            <h2>Rooms</h2>
+            <h2>Rooms Command</h2>
             <span>{rooms.length} saved</span>
           </div>
           <form className="dashboard-form" onSubmit={createRoom}>
@@ -170,24 +209,33 @@ export default function DMDashboardPage() {
               <input value={roomName} onChange={(event) => setRoomName(event.target.value)} maxLength={48} />
             </label>
             <button className="primary-action" type="submit">
-              Create saved room
+              Create room
             </button>
           </form>
-          <div className="room-list">
+          <div className="room-table" aria-label="Saved DM rooms">
             {rooms.length ? (
               rooms.map((room) => (
                 <article key={room.id}>
-                  <div>
+                  <div className="room-code-block">
+                    <strong>{room.roomCode}</strong>
+                    <small>Join code</small>
+                  </div>
+                  <div className="room-main-cell">
                     <input
                       aria-label={`Name for ${room.roomCode}`}
                       defaultValue={room.name}
                       onBlur={(event) => renameRoom(room, event.target.value)}
                     />
-                    <small>Join code {room.roomCode}</small>
+                    <small>Updated {new Date(room.updatedAt).toLocaleDateString()}</small>
                   </div>
-                  <Link className="secondary-action compact" href={`/room/${room.roomCode}`}>
-                    Open
-                  </Link>
+                  <div className="room-row-actions">
+                    <button className="secondary-action compact" onClick={() => navigator.clipboard?.writeText(room.roomCode)} type="button">
+                      Copy
+                    </button>
+                    <Link className="primary-action compact" href={`/room/${room.roomCode}`}>
+                      Open
+                    </Link>
+                  </div>
                 </article>
               ))
             ) : (
@@ -196,7 +244,40 @@ export default function DMDashboardPage() {
           </div>
         </section>
 
-        <section className="tool-card">
+        <section className="tool-card dm-profile-card">
+          <div className="panel-heading">
+            <h2>DM Profile</h2>
+            <span>Identity</span>
+          </div>
+          <form className="dashboard-form" onSubmit={saveProfile}>
+            <div className="profile-editor-preview">
+              <div className="dm-profile-mark" style={{ borderColor: profileDraft.color }}>
+                {profileDraft.avatarUrl ? <img alt="" src={profileDraft.avatarUrl} /> : <span>{(profileDraft.name || dm.username).slice(0, 1).toUpperCase()}</span>}
+              </div>
+              <div>
+                <strong>{profileDraft.name || dm.username}</strong>
+                <small>@{dm.username}</small>
+              </div>
+            </div>
+            <label>
+              Display name
+              <input value={profileDraft.name} onChange={(event) => setProfileDraft((current) => ({ ...current, name: event.target.value }))} maxLength={40} />
+            </label>
+            <label>
+              Profile color
+              <input type="color" value={profileDraft.color} onChange={(event) => setProfileDraft((current) => ({ ...current, color: event.target.value }))} />
+            </label>
+            <label>
+              Profile image
+              <input accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => handleProfileImage(event.target.files?.[0] ?? null)} type="file" />
+            </label>
+            <button className="secondary-action" type="submit">
+              Save profile
+            </button>
+          </form>
+        </section>
+
+        <section className="tool-card library-command-card">
           <div className="panel-heading">
             <h2>Shared Library</h2>
             <span>{library.length} presets</span>

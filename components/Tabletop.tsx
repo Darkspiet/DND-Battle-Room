@@ -1330,23 +1330,24 @@ export function Tabletop({ roomCode }: Props) {
         </div>
         <div className="room-actions">
           {isDm ? (
-            <details className="dm-tools-menu">
-              <summary>DM Tools</summary>
-              <div>
-                <button className={roomMode === "play" ? "selected" : ""} onClick={() => selectRoomMode("play")} type="button">
-                  Table
-                </button>
-                <button className={roomMode === "combat" ? "selected" : ""} onClick={() => selectRoomMode("combat")} type="button">
-                  Combat controls
-                </button>
-                <button className={roomMode === "build" ? "selected" : ""} onClick={() => selectRoomMode("build")} type="button">
-                  Build
-                </button>
-                <button className={roomMode === "library" ? "selected" : ""} onClick={() => selectRoomMode("library")} type="button">
-                  Library
-                </button>
-              </div>
-            </details>
+            <nav className="dm-mode-rail" aria-label="DM room modes">
+              <button className={roomMode === "play" ? "selected" : ""} onClick={() => selectRoomMode("play")} type="button">
+                <span>Table</span>
+                <small>Tokens</small>
+              </button>
+              <button className={roomMode === "combat" ? "selected" : ""} onClick={() => selectRoomMode("combat")} type="button">
+                <span>Combat</span>
+                <small>Turns</small>
+              </button>
+              <button className={roomMode === "build" ? "selected" : ""} onClick={() => selectRoomMode("build")} type="button">
+                <span>Build</span>
+                <small>Map</small>
+              </button>
+              <button className={roomMode === "library" ? "selected" : ""} onClick={() => selectRoomMode("library")} type="button">
+                <span>Library</span>
+                <small>Presets</small>
+              </button>
+            </nav>
           ) : null}
           <span className={syncMode === "server" || syncMode === "supabase" || syncMode === "websocket" ? "sync-badge online" : "sync-badge"}>
             {syncMode === "supabase"

@@ -1,32 +1,43 @@
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
 
-async function openDmTool(page: Page, name: string) {
-  const menu = page.locator(".dm-tools-menu");
-  if ((await menu.getAttribute("open")) === null) {
-    await menu.locator("summary").click();
-  }
-  await page.getByRole("button", { name }).click();
+async function signInAsDm(page: Page) {
+  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const response = await page.request.post("/api/dm/signup", {
+    data: {
+      username: `dm-${suffix}`,
+      password: "testpass",
+      name: "Test DM",
+      color: "#b7394b"
+    }
+  });
+  expect(response.ok()).toBeTruthy();
+}
+
+async function createRoom(page: Page) {
+  await signInAsDm(page);
+  await page.goto("/dm/dashboard");
+  await page.getByRole("button", { name: "Create room" }).click();
+}
+
+async function openDmTool(page: Page, name: "Combat" | "Build" | "Library" | "Table") {
+  await page.getByRole("button", { name: new RegExp(`^${name}`, "i") }).click();
 }
 
 test("creates a room and shows the tabletop", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await expect(page.getByRole("button", { name: "Create saved room" })).toBeVisible();
-
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await expect(page).toHaveURL(/\/room\/[A-Z0-9]+$/);
   await expect(page.getByRole("heading", { name: /^Room [A-Z0-9]+$/ })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Dice" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Tokens" })).toBeVisible();
-  await expect(page.getByText("DM Tools")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Combat" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "DM room modes" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Combat/i })).toBeVisible();
   await expect(page.locator(".board")).toBeVisible();
 });
 
 test("adds a token and rolls dice", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await page.getByRole("button", { name: "Add token" }).click();
   await expect(page.locator(".token")).toHaveCount(1);
@@ -48,14 +59,13 @@ test("adds a token and rolls dice", async ({ page }) => {
 });
 
 test("runs assisted initiative combat order", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await page.getByRole("button", { name: "Add token" }).click();
   await page.getByLabel("Token name").fill("Goblin");
   await page.getByRole("button", { name: "Add token" }).click();
 
-  await openDmTool(page, "Combat controls");
+  await openDmTool(page, "Combat");
   await page.getByRole("button", { name: "Start combat" }).click();
   await expect(page.getByRole("heading", { name: "Roll for initiative" })).toBeVisible();
   await expect(page.locator(".initiative-submit-list li")).toHaveCount(2);
@@ -73,7 +83,7 @@ test("runs assisted initiative combat order", async ({ page }) => {
   await expect(page.locator(".map-toolbar")).toContainText("Round 1: Hero");
   await expect(page.locator(".turn-label")).toContainText("Hero's turn");
 
-  await openDmTool(page, "Combat controls");
+  await openDmTool(page, "Combat");
   await page.getByRole("button", { name: "Next turn" }).click();
   await expect(page.locator(".active-turn-card")).toContainText("Goblin");
 
@@ -122,8 +132,7 @@ test("assigns unique random colors to room members", async ({ request }) => {
 });
 
 test("uploads and removes a custom token picture", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await page.getByLabel("Token picture").first().setInputFiles(path.join(process.cwd(), "tests/fixtures/token-picture.png"));
   await expect(page.locator(".token-preview img")).toBeVisible();
@@ -139,8 +148,7 @@ test("uploads and removes a custom token picture", async ({ page }) => {
 });
 
 test("uses build mode drawing with keyboard undo", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Draw" }).click();
@@ -163,8 +171,7 @@ test("uses build mode drawing with keyboard undo", async ({ page }) => {
 });
 
 test("adds snapped visual walls in build mode", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Walls" }).click();
@@ -190,8 +197,7 @@ test("adds snapped visual walls in build mode", async ({ page }) => {
 });
 
 test("selects edits drags and deletes a wall object", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Walls" }).click();
@@ -227,8 +233,7 @@ test("selects edits drags and deletes a wall object", async ({ page }) => {
 });
 
 test("sets battlefield backgrounds from upload and URL", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Background" }).click();
@@ -244,8 +249,7 @@ test("sets battlefield backgrounds from upload and URL", async ({ page }) => {
 });
 
 test("adds and undoes a colored circle effect", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Effects" }).click();
@@ -274,8 +278,7 @@ test("adds and undoes a colored circle effect", async ({ page }) => {
 });
 
 test("selects edits drags and deletes an effect object", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Effects" }).click();
@@ -318,8 +321,7 @@ test("selects edits drags and deletes an effect object", async ({ page }) => {
 });
 
 test("adds cone cube and line effects", async ({ page }) => {
-  await page.goto("/dm/dashboard");
-  await page.getByRole("button", { name: "Create saved room" }).click();
+  await createRoom(page);
 
   await openDmTool(page, "Build");
   await page.getByRole("button", { name: "Effects" }).click();

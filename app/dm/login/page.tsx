@@ -3,87 +3,111 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getBrowserSupabaseClient, hasSupabaseConfig } from "../../../lib/supabaseRoom";
-import { getCurrentDMUser, getLocalDMUser, saveLocalDMUser } from "../../../lib/dmData";
+import { hasSupabaseConfig } from "../../../lib/supabaseRoom";
+import { createDMAccount, getCurrentDMUser, signInDM } from "../../../lib/dmData";
 import { saveGuestProfile } from "../../../lib/storage";
+import { prepareTokenImage } from "../../../lib/tokenImages";
+
+const PROFILE_COLORS = ["#b7394b", "#227447", "#2563eb", "#7c3aed", "#8a5a10", "#151b23"];
 
 export default function DMLoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("Dungeon Master");
+  const [name, setName] = useState("Mira Stone");
+  const [color, setColor] = useState(PROFILE_COLORS[0]);
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarName, setAvatarName] = useState("");
   const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const hasSupabase = hasSupabaseConfig();
 
   useEffect(() => {
+    if (!hasSupabase) {
+      setLoading(false);
+      return;
+    }
     getCurrentDMUser().then((user) => {
-      if (!user) return;
-      saveGuestProfile({ id: user.id, nickname: user.name, color: "#b7394b" });
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+      saveGuestProfile({ id: user.id, nickname: user.name, color: user.color, avatarUrl: user.avatarUrl, avatarName: user.avatarName });
       router.replace("/dm/dashboard");
-    });
-  }, [router]);
+    }).catch(() => setLoading(false));
+  }, [hasSupabase, router]);
+
+  async function handleAvatar(file: File | null) {
+    if (!file) return;
+    try {
+      const image = await prepareTokenImage(file);
+      setError("");
+      setAvatarUrl(image.imageUrl);
+      setAvatarName(image.imageName);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not use that profile image.");
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setStatus("");
+    setSubmitting(true);
+    try {
+      const result =
+        mode === "signin"
+          ? await signInDM(username, password)
+          : await createDMAccount({ username, password, name, color, avatarUrl: avatarUrl || undefined, avatarName: avatarName || undefined });
 
-    const supabase = getBrowserSupabaseClient();
-    if (!supabase) {
-      const user = getLocalDMUser();
-      saveLocalDMUser({ ...user, name: name.trim() || "Local DM" });
-      saveGuestProfile({ id: user.id, nickname: name.trim() || "Local DM", color: "#b7394b" });
-      router.push("/dm/dashboard");
-      return;
-    }
-
-    const credentials = { email: email.trim(), password };
-    const response =
-      mode === "signin"
-        ? await supabase.auth.signInWithPassword(credentials)
-        : await supabase.auth.signUp({
-            ...credentials,
-            options: { data: { name: name.trim() || "Dungeon Master" } }
-          });
-
-    if (response.error) {
-      setError(response.error.message);
-      return;
-    }
-
-    if (mode === "signup" && !response.data.session) {
-      setStatus("Check your email to confirm the DM account, then sign in.");
-      return;
-    }
-
-    const user = response.data.user;
-    if (user) {
+      if (result.needsEmailConfirmation) {
+        setStatus("Confirm the generated DM account email in Supabase, then sign in with this username.");
+        return;
+      }
+      if (!result.user) {
+        setError("Could not open that DM profile.");
+        return;
+      }
       saveGuestProfile({
-        id: user.id,
-        nickname: user.user_metadata?.name ?? user.email?.split("@")[0] ?? "Dungeon Master",
-        color: "#b7394b"
+        id: result.user.id,
+        nickname: result.user.name,
+        color: result.user.color,
+        avatarUrl: result.user.avatarUrl,
+        avatarName: result.user.avatarName
       });
+      router.push("/dm/dashboard");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not sign in as DM.");
+    } finally {
+      setSubmitting(false);
     }
-    router.push("/dm/dashboard");
   }
 
   return (
-    <main className="app-shell auth-shell">
-      <section className="auth-panel">
-        <Link href="/" className="back-link">
-          Start
-        </Link>
-        <div>
-          <span className="product-kicker">DM Account</span>
-          <h1>Login as DM</h1>
-          <p>Use a DM account to create saved rooms and manage the shared token and object library.</p>
+    <main className="app-shell auth-shell dm-auth-shell">
+      <section className="auth-panel dm-auth-panel">
+        <div className="panel-heading">
+          <Link href="/" className="back-link">
+            Start
+          </Link>
+          <span className="sync-badge">DM profile</span>
+        </div>
+        <div className="auth-title-row">
+          <div>
+            <h1>Enter the DM sanctum.</h1>
+            <p>Use a username and password to unlock saved rooms, profile identity, and the shared encounter library.</p>
+          </div>
+          <div className="dm-profile-mark" style={{ borderColor: color }}>
+            {avatarUrl ? <img alt="" src={avatarUrl} /> : <span>{(name || username || "DM").slice(0, 1).toUpperCase()}</span>}
+          </div>
         </div>
 
         {!hasSupabase ? (
           <p className="sync-warning">
-            Supabase is not configured. This device will use a local DM profile for development.
+            Using the local DM database for this device. Add Supabase env vars and apply <code>supabase/schema.sql</code> when you want hosted accounts.
           </p>
         ) : null}
 
@@ -97,33 +121,71 @@ export default function DMLoginPage() {
         </div>
 
         <form className="auth-form" onSubmit={submit}>
-          {mode === "signup" || !hasSupabase ? (
+          <label>
+            Username
+            <input
+              autoComplete="username"
+              autoFocus
+              value={username}
+              onChange={(event) => setUsername(event.target.value.toLowerCase())}
+              placeholder="mira.stone"
+              maxLength={32}
+              required
+            />
+          </label>
+          {mode === "signup" ? (
             <label>
-              DM name
+              Display name
               <input value={name} onChange={(event) => setName(event.target.value)} maxLength={40} />
             </label>
           ) : null}
-          {hasSupabase ? (
+          <label>
+            Password
+            <input
+              autoComplete={mode === "signin" ? "current-password" : "new-password"}
+              minLength={4}
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+          </label>
+          {mode === "signup" ? (
             <>
+              <div>
+                <span className="field-label">Profile color</span>
+                <div className="color-picker" aria-label="Choose DM profile color">
+                  {PROFILE_COLORS.map((candidate) => (
+                    <button
+                      aria-label={`Use ${candidate}`}
+                      className={candidate === color ? "selected" : ""}
+                      key={candidate}
+                      onClick={() => setColor(candidate)}
+                      style={{ background: candidate }}
+                      type="button"
+                    />
+                  ))}
+                </div>
+              </div>
               <label>
-                Email
-                <input autoComplete="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
+                Optional profile image
+                <input accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => handleAvatar(event.target.files?.[0] ?? null)} type="file" />
               </label>
-              <label>
-                Password
-                <input
-                  autoComplete={mode === "signin" ? "current-password" : "new-password"}
-                  minLength={6}
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                />
-              </label>
+              {avatarUrl ? (
+                <div className="token-preview">
+                  <img alt="" src={avatarUrl} />
+                  <div>
+                    <strong>{avatarName || "DM profile image"}</strong>
+                    <button className="secondary-action compact" onClick={() => { setAvatarUrl(""); setAvatarName(""); }} type="button">
+                      Remove image
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </>
           ) : null}
-          <button className="primary-action" type="submit">
-            {hasSupabase ? (mode === "signin" ? "Sign in" : "Create account") : "Continue as local DM"}
+          <button className="primary-action" disabled={submitting || loading} type="submit">
+            {submitting ? "Opening profile..." : mode === "signin" ? "Sign in as DM" : "Create DM profile"}
           </button>
         </form>
 

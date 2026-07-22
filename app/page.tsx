@@ -5,22 +5,25 @@ export default function HomePage() {
     <main className="app-shell start-shell">
       <section className="start-hero">
         <div className="start-copy">
-          <span className="product-kicker">DND Battle Room</span>
-          <h1>Choose your table role.</h1>
+          <h1>DND Battle Room</h1>
           <p>
-            DMs prepare saved rooms and reusable assets. Players enter with a code,
-            set their table profile, and join the fight.
+            A focused tabletop command room for encounter maps, initiative, shared dice, and reusable combat pieces.
           </p>
+          <div className="start-feature-list" aria-label="Battle room capabilities">
+            <span>Saved DM rooms</span>
+            <span>Live table sync</span>
+            <span>Map build tools</span>
+          </div>
         </div>
         <div className="start-actions" aria-label="Start options">
           <Link className="start-card dm-card" href="/dm/login">
-            <span>DM</span>
-            <strong>Login as DM</strong>
-            <small>Create saved rooms, manage global tokens, and open build mode.</small>
+            <span>DM Gate</span>
+            <strong>Open DM Profile</strong>
+            <small>Sign in with username and password to manage rooms, profiles, and shared presets.</small>
           </Link>
           <Link className="start-card player-card" href="/join">
-            <span>Player</span>
-            <strong>Join Game</strong>
+            <span>Player Entry</span>
+            <strong>Join by Code</strong>
             <small>Use a room code, add your name, and upload an optional picture.</small>
           </Link>
         </div>

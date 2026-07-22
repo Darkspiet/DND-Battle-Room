@@ -1,48 +1,9 @@
 DND Battle Room Workflow Rules
 
-Purpose
-These rules describe how future coding work in this repository should be verified and documented.
+This file is kept as a compatibility pointer for older references.
 
-Port Rules
-- The persistent app service runs on port 3000.
-- Do not use port 3000 for temporary test servers.
-- Use port 3100 for test/dev verification servers.
-- If port 3100 is occupied, stop the temporary process using it before testing.
-- Only restart the port 3000 service after a successful build when the deployed app should be updated.
+The active project rules live in:
 
-Testing Rules
-- Run relevant checks before calling work complete.
-- For normal UI/code changes, run:
-  - npm run typecheck
-  - npm run build
-  - Playwright E2E against http://127.0.0.1:3100
-- The preferred Playwright verification pattern is:
-  - start a temporary app server on port 3100
-  - point PLAYWRIGHT_BASE_URL at http://127.0.0.1:3100
-  - run the E2E suite
-  - stop the temporary server when done
-- Keep the port 3000 service separate from test execution.
+docs/PROJECT_RULEBOOK.md
 
-Change Summary Rule
-- After tests are complete, create or update a docs text file that summarizes the changes made.
-- The change summary should include:
-  - date
-  - short summary
-  - changed behavior
-  - important state/API/type changes
-  - tests run and results
-  - ports used
-- Store change summaries in docs/.
-- Use a clear filename, for example:
-  - docs/battle-room-combat-ui-changes.txt
-  - docs/YYYY-MM-DD-change-summary.txt
-
-Service Deployment Rule
-- After a successful production build, restart the service only when the app should be deployed to port 3000.
-- Verify port 3000 after restart with:
-  - curl -s -I http://127.0.0.1:3000
-- Expected result is HTTP 200.
-
-Cleanup Rule
-- Stop any temporary dev/test server after verification.
-- Before finishing, confirm only the intended persistent service remains on port 3000.
+Follow that file for ports, Playwright testing, Supabase setup, documentation rules, build steps, and service restart requirements.

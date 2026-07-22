@@ -3,15 +3,23 @@
 import type { DMRoomSummary, LibraryItem, LibraryItemKind, TokenType } from "./types";
 import { getBrowserSupabaseClient, hasSupabaseConfig } from "./supabaseRoom";
 
-const DM_USER_KEY = "dnd-battle-room-local-dm";
 const DM_ROOMS_KEY = "dnd-battle-room-dm-rooms";
 const LIBRARY_KEY = "dnd-battle-room-public-library";
 
 export type DMUser = {
   id: string;
-  email: string;
+  username: string;
   name: string;
-  isLocalFallback?: boolean;
+  color: string;
+  avatarUrl?: string;
+  avatarName?: string;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
+export type DMAuthResult = {
+  user: DMUser | null;
+  needsEmailConfirmation?: boolean;
 };
 
 type DMRoomRow = {
@@ -19,6 +27,17 @@ type DMRoomRow = {
   room_code: string;
   name: string;
   dm_user_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type DMProfileRow = {
+  user_id: string;
+  username: string;
+  display_name: string;
+  color: string;
+  avatar_url: string | null;
+  avatar_name: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -63,6 +82,69 @@ function writeJson<T>(key: string, value: T) {
   if (typeof window !== "undefined") {
     window.localStorage.setItem(key, JSON.stringify(value));
   }
+}
+
+function normalizeUsername(username: string) {
+  return username.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
+}
+
+function usernameToAuthEmail(username: string) {
+  return `${normalizeUsername(username)}@dm.dnd-battle-room.local`;
+}
+
+async function requestLocalDMBackend(path: string, init?: RequestInit) {
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...init?.headers
+    }
+  });
+  const data = (await response.json()) as { user?: DMUser | null; error?: string };
+  if (!response.ok) {
+    throw new Error(data.error ?? "DM backend request failed.");
+  }
+  return data.user ?? null;
+}
+
+async function requestLocalJson<T>(path: string, key: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...init?.headers
+    }
+  });
+  const data = (await response.json()) as Record<string, T> & { error?: string };
+  if (!response.ok) {
+    throw new Error(data.error ?? "DM backend request failed.");
+  }
+  return data[key];
+}
+
+function fromProfileRow(row: DMProfileRow): DMUser {
+  return {
+    id: row.user_id,
+    username: row.username,
+    name: row.display_name,
+    color: row.color,
+    avatarUrl: row.avatar_url ?? undefined,
+    avatarName: row.avatar_name ?? undefined,
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime()
+  };
+}
+
+function toProfileRow(profile: DMUser) {
+  return {
+    user_id: profile.id,
+    username: normalizeUsername(profile.username),
+    display_name: profile.name.trim() || profile.username,
+    color: profile.color || "#b7394b",
+    avatar_url: profile.avatarUrl ?? null,
+    avatar_name: profile.avatarName ?? null,
+    updated_at: new Date().toISOString()
+  };
 }
 
 function fromRoomRow(row: DMRoomRow): DMRoomSummary {
@@ -125,33 +207,132 @@ function toLibraryRow(item: LibraryItem) {
   };
 }
 
-export function getLocalDMUser(): DMUser {
-  const stored = readJson<DMUser | null>(DM_USER_KEY, null);
-  if (stored) return stored;
-  const next = {
-    id: createId("dm"),
-    email: "local-dm@battle-room.invalid",
-    name: "Local DM",
-    isLocalFallback: true
-  };
-  writeJson(DM_USER_KEY, next);
-  return next;
-}
-
-export function saveLocalDMUser(user: DMUser) {
-  writeJson(DM_USER_KEY, user);
-}
-
 export async function getCurrentDMUser(): Promise<DMUser | null> {
-  if (!hasSupabaseConfig()) return getLocalDMUser();
+  if (!hasSupabaseConfig()) {
+    return requestLocalDMBackend("/api/dm/session");
+  }
   const supabase = getBrowserSupabaseClient();
-  if (!supabase) return getLocalDMUser();
+  if (!supabase) return null;
   const { data } = await supabase.auth.getUser();
   if (!data.user) return null;
-  return {
+  const profile = await loadDMProfile(data.user.id);
+  if (profile) return profile;
+  const username = normalizeUsername(data.user.user_metadata?.username ?? data.user.email?.split("@")[0] ?? "dm");
+  return saveDMProfile({
     id: data.user.id,
-    email: data.user.email ?? "dm@battle-room.invalid",
-    name: data.user.user_metadata?.name ?? data.user.email?.split("@")[0] ?? "Dungeon Master"
+    username,
+    name: data.user.user_metadata?.name ?? username,
+    color: data.user.user_metadata?.color ?? "#b7394b"
+  });
+}
+
+export async function signInDM(username: string, password: string): Promise<DMAuthResult> {
+  const supabase = getBrowserSupabaseClient();
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedUsername) throw new Error("Enter a DM username.");
+  if (!supabase) {
+    return {
+      user: await requestLocalDMBackend("/api/dm/signin", {
+        method: "POST",
+        body: JSON.stringify({ username: normalizedUsername, password })
+      })
+    };
+  }
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: usernameToAuthEmail(normalizedUsername),
+    password
+  });
+  if (error) throw error;
+  if (!data.user) return { user: null };
+  return { user: await getCurrentDMUser() };
+}
+
+export async function createDMAccount(input: {
+  username: string;
+  password: string;
+  name: string;
+  color: string;
+  avatarUrl?: string;
+  avatarName?: string;
+}): Promise<DMAuthResult> {
+  const supabase = getBrowserSupabaseClient();
+  const username = normalizeUsername(input.username);
+  if (username.length < 3) throw new Error("Use at least 3 letters or numbers for the username.");
+  if (input.password.length < 4) throw new Error("Use a password with at least 4 characters.");
+  const name = input.name.trim() || username;
+  if (!supabase) {
+    return {
+      user: await requestLocalDMBackend("/api/dm/signup", {
+        method: "POST",
+        body: JSON.stringify({
+          username,
+          password: input.password,
+          name,
+          color: input.color,
+          avatarUrl: input.avatarUrl,
+          avatarName: input.avatarName
+        })
+      })
+    };
+  }
+  const { data, error } = await supabase.auth.signUp({
+    email: usernameToAuthEmail(username),
+    password: input.password,
+    options: {
+      data: {
+        username,
+        name,
+        color: input.color
+      }
+    }
+  });
+  if (error) throw error;
+  if (!data.user) return { user: null };
+  if (!data.session) return { user: null, needsEmailConfirmation: true };
+  const user = await saveDMProfile({
+    id: data.user.id,
+    username,
+    name,
+    color: input.color,
+    avatarUrl: input.avatarUrl,
+    avatarName: input.avatarName
+  });
+  return { user };
+}
+
+export async function loadDMProfile(userId: string) {
+  const supabase = getBrowserSupabaseClient();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("dm_profiles")
+    .select("user_id,username,display_name,color,avatar_url,avatar_name,created_at,updated_at")
+    .eq("user_id", userId)
+    .maybeSingle<DMProfileRow>();
+
+  if (error || !data) return null;
+  return fromProfileRow(data);
+}
+
+export async function saveDMProfile(profile: DMUser) {
+  const supabase = getBrowserSupabaseClient();
+  if (!supabase) {
+    const user = await requestLocalDMBackend("/api/dm/profile", {
+      method: "PUT",
+      body: JSON.stringify(profile)
+    });
+    return user ?? profile;
+  }
+  const { data, error } = await supabase
+    .from("dm_profiles")
+    .upsert(toProfileRow(profile), { onConflict: "user_id" })
+    .select("user_id,username,display_name,color,avatar_url,avatar_name,created_at,updated_at")
+    .single<DMProfileRow>();
+
+  if (error) throw error;
+  return {
+    ...fromProfileRow(data),
+    avatarUrl: profile.avatarUrl ?? fromProfileRow(data).avatarUrl,
+    avatarName: profile.avatarName ?? fromProfileRow(data).avatarName
   };
 }
 
@@ -159,13 +340,21 @@ export async function signOutDM() {
   const supabase = getBrowserSupabaseClient();
   if (supabase) {
     await supabase.auth.signOut();
+    return;
   }
+  await fetch("/api/dm/session", { method: "DELETE" });
 }
 
 export async function loadDMRooms(dmUserId: string) {
   const fallback = readJson<DMRoomSummary[]>(DM_ROOMS_KEY, []).filter((room) => room.dmUserId === dmUserId);
   const supabase = getBrowserSupabaseClient();
-  if (!supabase) return fallback;
+  if (!supabase) {
+    try {
+      return await requestLocalJson<DMRoomSummary[]>("/api/dm/rooms", "rooms");
+    } catch {
+      return fallback;
+    }
+  }
 
   const { data, error } = await supabase
     .from("dm_rooms")
@@ -182,7 +371,16 @@ export async function saveDMRoom(room: DMRoomSummary) {
   writeJson(DM_ROOMS_KEY, [room, ...local.filter((item) => item.id !== room.id && item.roomCode !== room.roomCode)]);
 
   const supabase = getBrowserSupabaseClient();
-  if (!supabase) return room;
+  if (!supabase) {
+    try {
+      return await requestLocalJson<DMRoomSummary>("/api/dm/rooms", "room", {
+        method: "POST",
+        body: JSON.stringify(room)
+      });
+    } catch {
+      return room;
+    }
+  }
 
   const { data, error } = await supabase
     .from("dm_rooms")
@@ -197,7 +395,13 @@ export async function saveDMRoom(room: DMRoomSummary) {
 export async function loadLibraryItems() {
   const fallback = readJson<LibraryItem[]>(LIBRARY_KEY, []);
   const supabase = getBrowserSupabaseClient();
-  if (!supabase) return fallback;
+  if (!supabase) {
+    try {
+      return await requestLocalJson<LibraryItem[]>("/api/dm/library", "library");
+    } catch {
+      return fallback;
+    }
+  }
 
   const { data, error } = await supabase
     .from("public_library_items")
@@ -213,7 +417,16 @@ export async function saveLibraryItem(item: LibraryItem) {
   writeJson(LIBRARY_KEY, [item, ...local.filter((entry) => entry.id !== item.id)]);
 
   const supabase = getBrowserSupabaseClient();
-  if (!supabase) return item;
+  if (!supabase) {
+    try {
+      return await requestLocalJson<LibraryItem>("/api/dm/library", "item", {
+        method: "POST",
+        body: JSON.stringify(item)
+      });
+    } catch {
+      return item;
+    }
+  }
 
   const { data, error } = await supabase
     .from("public_library_items")

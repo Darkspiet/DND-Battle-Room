@@ -2,114 +2,82 @@
 
 A browser tabletop for DND-style combat rooms.
 
-## Run locally
+The source of truth for setup, ports, testing, backend requirements, deployment, and documentation rules is:
+
+- [docs/PROJECT_RULEBOOK.md](docs/PROJECT_RULEBOOK.md)
+
+## Quick Start
+
+Install dependencies:
 
 ```bash
 npm install
-npm run dev
 ```
 
-Open `http://localhost:3000`.
+Run a temporary local dev server on the project test port:
 
-## Current v1
+```bash
+HOSTNAME=127.0.0.1 PORT=3100 npm run dev
+```
 
-- Start screen with separate DM login and player join paths.
-- Supabase Auth-ready DM dashboard with a local development fallback.
-- DM-created named rooms with join codes.
-- Player pre-join profile with nickname, color, and optional avatar.
-- Shared public token/object preset library for DM build prep.
-- DM account/profile is assigned as room owner when a room is created.
-- Configurable square battle grid.
-- Draggable tokens with owner-colored rings.
-- DM can manage every token; players control their own tokens.
-- Drawing mode for quick wall/marker lines.
-- Dice roller with public/private rolls.
-- Player bar with latest visible roll.
-- Local realtime sync across browser tabs through `BroadcastChannel`.
+Open:
 
-## Backend path
+```text
+http://127.0.0.1:3100
+```
 
-The UI and state shape are ready for a hosted realtime backend. See `supabase/schema.sql`
-for the tables and policies to use when wiring Supabase Realtime and Presence.
+Do not use port `3000` for temporary development or Playwright. Port `3000` belongs to the official `dnd-battle-room` systemd service.
 
-## Production service on this LXC
+## Backend Setup
 
-This app is configured to run as a persistent systemd service on this LXC.
+The official backend is self-hosted PostgreSQL. The intended production setup is:
+
+```bash
+npm run install:production
+```
+
+Manual setup uses `.env.production` with:
+
+```bash
+DATABASE_URL=
+SESSION_SECRET=
+```
+
+Then apply the schema:
+
+```bash
+npm run db:apply
+```
+
+Supabase remains optional compatibility, not the default install path. Real env files are ignored by git. Do not commit secrets.
+
+## Checks
+
+Use this order before deploying to the official service:
+
+```bash
+npm run typecheck
+npm run test:e2e
+npm run build
+```
+
+Playwright uses `http://127.0.0.1:3100` by default.
+
+## Official Service
+
+The official server runs through systemd on port `3000`:
 
 ```bash
 systemctl status dnd-battle-room
 journalctl -u dnd-battle-room -f
-systemctl restart dnd-battle-room
 ```
 
-The installed service uses the custom Next.js server with the built-in WebSocket sync endpoint:
-
-```bash
-HOSTNAME=0.0.0.0 PORT=3000 npm run start
-```
-
-That makes the app available from this LXC at:
-
-```text
-http://127.0.0.1:3000
-http://192.168.178.174:3000
-```
-
-If the app changes, rebuild and restart the service:
+After checks pass, deploy the current build:
 
 ```bash
 npm run build
 systemctl restart dnd-battle-room
-```
-
-## Cloudflare Tunnel
-
-`cloudflared` is running on another LXC, so point that tunnel at this LXC over HTTP:
-
-```yaml
-ingress:
-  - hostname: dnd.example.com
-    service: http://192.168.178.174:3000
-  - service: http_status:404
-```
-
-Replace `dnd.example.com` with the public hostname assigned in Cloudflare.
-
-If `cloudflared` is ever moved onto the same LXC as this app, use localhost instead:
-
-```yaml
-ingress:
-  - hostname: dnd.example.com
-    service: http://127.0.0.1:3000
-  - service: http_status:404
-```
-
-The app is a normal HTTP Next.js service with a `/ws` WebSocket endpoint on the same host and port.
-
-## Verification
-
-After starting or restarting the service, verify the app locally:
-
-```bash
 curl -I http://127.0.0.1:3000
-curl -I http://192.168.178.174:3000
 ```
 
-Both should return `HTTP/1.1 200 OK`.
-
-To verify the room API:
-
-```bash
-curl -sS -X POST http://127.0.0.1:3000/api/rooms/VERIFY \
-  -H 'Content-Type: application/json' \
-  --data '{"id":"verify","nickname":"Verifier","color":"#3d8bfd"}'
-```
-
-Expected result: a JSON room object with `"roomCode":"VERIFY"`.
-
-## Hosting notes
-
-- Current non-Supabase multiplayer state is stored in the Next.js server process memory.
-- Rooms are usable through the tunnel now, but room state is lost when the service restarts.
-- For persistent hosted rooms, configure Supabase with `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`, then apply `supabase/schema.sql`.
-- The app has no login by default. If the room should be private, protect the public hostname with Cloudflare Access.
+Expected result: `HTTP/1.1 200 OK`.
