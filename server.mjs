@@ -77,7 +77,13 @@ function createRoom(roomCode, profile) {
     drawings: [],
     effects: [],
     rolls: [],
-    initiative: []
+    combat: {
+      active: false,
+      phase: "idle",
+      round: 1,
+      currentTurnIndex: 0,
+      entries: []
+    }
   };
 }
 

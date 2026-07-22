@@ -4,10 +4,16 @@ out
 dist
 .env
 .env.local
+.data
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 docs/future-ideas.md
 .env.production
+<<<<<<< HEAD
 .env.example
 .data/dm-backend.json
+=======
+.gitignore
+.env.example
+>>>>>>> 0864b5af40c876ecf945bf916b9af3dfb674acb1

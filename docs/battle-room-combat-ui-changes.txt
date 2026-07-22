@@ -1,0 +1,75 @@
+Battle Room Combat UI Changes
+Date: 2026-05-20
+
+Summary
+The battle room UI was changed so players no longer need to understand separate Play and Combat tabs. Combat now starts as a shared event: when the DM starts combat, the room dims and every user gets a clear initiative prompt over the map.
+
+Main UI Changes
+- Removed the player-facing Play/Combat tab flow.
+- Added a DM-only "DM Tools" menu.
+- DM Tools now contains:
+  - Table
+  - Combat controls
+  - Build
+  - Library
+- Kept normal players focused on the map, dice, tokens, and room state.
+- Build and library controls are hidden unless the DM opens them.
+- The battle map remains the primary visual area.
+
+Combat Start / Initiative Changes
+- Added combat phases:
+  - idle
+  - initiative
+  - active
+- When the DM starts combat, the room enters the initiative phase.
+- During initiative, the whole page/map is visually dimmed.
+- A centered overlay appears with the message "DM Started Combat" and "Roll for initiative".
+- The overlay shows the exact token name being rolled for, so players do not have to guess which character/token the prompt belongs to.
+- Players can roll initiative in the app with a visible d20-style roll button.
+- Players can also enter a manual total if they rolled physical dice at the table.
+- Roll modes support normal, advantage, and disadvantage.
+- The overlay shows submitted and waiting initiative entries.
+- The DM can begin the round once entries are ready.
+
+Active Turn Changes
+- Once combat becomes active, the overlay closes.
+- The current token gets a strong highlighted ring.
+- A small text label appears above the active token, for example "Hero's turn".
+- The map toolbar shows the current round and active token.
+- DM combat controls allow previous turn, next turn, begin round, restart initiative, and end combat.
+
+State / Data Changes
+- RoomState now stores combat in a CombatState object instead of relying on the old simple initiative list.
+- CombatState includes active state, phase, round number, current turn index, and initiative entries.
+- Initiative entries now track:
+  - token id and token name
+  - owner id and owner name
+  - dex modifier
+  - roll mode
+  - roll result and total
+  - submitted status
+  - source: app, manual, or DM
+  - conditions
+- Old initiative data is still migrated into the new combat state when rooms load.
+- New empty rooms start with combat phase "idle".
+
+Styling / Accessibility Changes
+- Added initiative overlay styling.
+- Added d20 roll button animation.
+- Added reduced-motion handling for the roll/modal animation.
+- Added active-turn token label styling.
+- Added responsive layout rules for the initiative overlay on mobile.
+- Added ARIA dialog semantics and live status behavior for initiative prompts.
+
+Testing Performed
+- npm run typecheck
+- Playwright E2E suite against a fresh local dev server on port 3102:
+  - 15 passed
+- npm run build
+- Restarted the dnd-battle-room service.
+- Verified the production service on port 3000 returned HTTP 200.
+
+Runtime Ports Used
+- Production/systemd service: port 3000
+- Temporary test server used during this change: port 3102
+- Future requested test port: port 3100

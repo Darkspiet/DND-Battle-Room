@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { PointerEvent, useEffect, useRef, useState } from "react";
+import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { rollDice } from "../lib/dice";
+import { loadLibraryItems } from "../lib/dmData";
 import { createEntityId, getGuestProfile, loadRoom, saveGuestProfile, saveRoom } from "../lib/storage";
 import { hasSupabaseConfig, joinSupabaseRoom, saveSupabaseRoom, subscribeToSupabaseRoom } from "../lib/supabaseRoom";
 import { prepareBattleMapImage, prepareTokenImage } from "../lib/tokenImages";
@@ -10,9 +11,14 @@ import type {
   AreaEffectShape,
   AreaEffectTemplate,
   BattleMapBackground,
+  CombatPhase,
   DiceRoll,
   DrawingLine,
   GuestProfile,
+  InitiativeEntry,
+  InitiativeRollMode,
+  LibraryItem,
+  LibraryItemKind,
   RoomState,
   Token,
   TokenType
@@ -27,6 +33,7 @@ const TOKEN_TYPES: TokenType[] = ["character", "npc", "monster", "object"];
 const BUILD_COLORS = ["#111827", "#b7394b", "#2563eb", "#227447", "#eab308", "#7c3aed", "#f97316", "#ffffff"];
 const EFFECT_SHAPES: AreaEffectShape[] = ["circle", "cone", "cube", "line"];
 const QUICK_EFFECT_SIZES = [5, 10, 15, 20, 30, 60];
+const INITIATIVE_MODES: InitiativeRollMode[] = ["normal", "advantage", "disadvantage", "manual"];
 const DEFAULT_BACKGROUND_IMAGE_SETTINGS = {
   positionX: 0,
   positionY: 0,
@@ -34,6 +41,7 @@ const DEFAULT_BACKGROUND_IMAGE_SETTINGS = {
   opacity: 100
 };
 
+type RoomMode = "play" | "combat" | "build" | "library";
 type BuildTool = "draw" | "wall" | "effects" | "background";
 type BuildUndo = (current: RoomState) => RoomState;
 type BoardPoint = { x: number; y: number };
@@ -54,6 +62,73 @@ function roomApiPath(roomCode: string) {
 function roomWebSocketUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws`;
+}
+
+function normalizeRoomState(room: RoomState): RoomState {
+  const combat =
+    room.combat ??
+    {
+      active: false,
+      phase: "idle" as CombatPhase,
+      round: 1,
+      currentTurnIndex: 0,
+      entries: (room.initiative ?? []).map((entry, index) => {
+        const token = room.tokens.find((item) => item.id === entry.tokenId);
+        return {
+          id: entry.id,
+          tokenId: entry.tokenId,
+          name: entry.name,
+          ownerId: token?.ownerId ?? room.dmId,
+          ownerName: token?.ownerName ?? "DM",
+          dexModifier: 0,
+          roll: entry.score,
+          total: entry.score,
+          mode: "manual" as InitiativeRollMode,
+          conditions: [],
+          submitted: true,
+          source: "manual" as const,
+          createdAt: room.createdAt + index
+        };
+      })
+    };
+
+  return {
+    ...room,
+    effects: room.effects ?? [],
+    combat: {
+      active: combat.active,
+      phase: (combat.phase ?? (combat.active ? "active" : "idle")) as CombatPhase,
+      round: combat.round || 1,
+      currentTurnIndex: Math.max(0, Math.min(combat.currentTurnIndex ?? 0, Math.max(0, combat.entries.length - 1))),
+      entries: combat.entries.map((entry, index) => ({
+        ...entry,
+        ownerId: entry.ownerId ?? room.tokens.find((token) => token.id === entry.tokenId)?.ownerId ?? room.dmId,
+        ownerName: entry.ownerName ?? room.tokens.find((token) => token.id === entry.tokenId)?.ownerName ?? "DM",
+        dexModifier: entry.dexModifier ?? 0,
+        total: entry.total ?? entry.roll ?? 0,
+        mode: entry.mode ?? "manual",
+        conditions: entry.conditions ?? [],
+        submitted: entry.submitted ?? (entry.roll !== undefined || entry.total > 0),
+        source: entry.source,
+        createdAt: entry.createdAt ?? room.createdAt + index
+      }))
+    }
+  };
+}
+
+function sortInitiativeEntries(entries: InitiativeEntry[]) {
+  return [...entries].sort((a, b) => b.total - a.total || b.dexModifier - a.dexModifier || a.createdAt - b.createdAt);
+}
+
+function rollD20() {
+  return Math.floor(Math.random() * 20) + 1;
+}
+
+function splitConditions(input: string) {
+  return input
+    .split(",")
+    .map((condition) => condition.trim())
+    .filter(Boolean);
 }
 
 function pointDistance(first: BoardPoint, second: BoardPoint) {
@@ -121,6 +196,7 @@ export function Tabletop({ roomCode }: Props) {
   const [draggingToken, setDraggingToken] = useState<string | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const [selectedBuildObject, setSelectedBuildObject] = useState<SelectedBuildObject>(null);
+  const [roomMode, setRoomMode] = useState<RoomMode>("play");
   const [draggingBuildObject, setDraggingBuildObject] = useState<BuildObjectDrag | null>(null);
   const [buildMode, setBuildMode] = useState(false);
   const [buildTool, setBuildTool] = useState<BuildTool>("draw");
@@ -134,6 +210,11 @@ export function Tabletop({ roomCode }: Props) {
   const [effectOpacity, setEffectOpacity] = useState(35);
   const [effectLabel, setEffectLabel] = useState("");
   const [backgroundUrl, setBackgroundUrl] = useState("");
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
+  const [libraryKind, setLibraryKind] = useState<LibraryItemKind>("token");
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [initiativeManualValues, setInitiativeManualValues] = useState<Record<string, string>>({});
+  const [initiativeRollingId, setInitiativeRollingId] = useState<string | null>(null);
   const [newToken, setNewToken] = useState({
     name: "Hero",
     icon: "⚔",
@@ -160,7 +241,13 @@ export function Tabletop({ roomCode }: Props) {
   function syncProfileFromRoom(nextRoom: RoomState, fallbackProfile: GuestProfile) {
     const assignedMember = nextRoom.members.find((member) => member.id === fallbackProfile.id);
     const nextProfile = assignedMember
-      ? { id: assignedMember.id, nickname: assignedMember.nickname, color: assignedMember.color }
+      ? {
+          id: assignedMember.id,
+          nickname: assignedMember.nickname,
+          color: assignedMember.color,
+          avatarUrl: assignedMember.avatarUrl,
+          avatarName: assignedMember.avatarName
+        }
       : fallbackProfile;
     setProfile(nextProfile);
     saveGuestProfile(nextProfile);
@@ -169,7 +256,7 @@ export function Tabletop({ roomCode }: Props) {
   useEffect(() => {
     let cancelled = false;
     const loadedProfile = getGuestProfile();
-    const localRoom = loadRoom(roomCode, loadedProfile);
+    const localRoom = normalizeRoomState(loadRoom(roomCode, loadedProfile));
     syncProfileFromRoom(localRoom, loadedProfile);
     setRoom(localRoom);
 
@@ -187,9 +274,10 @@ export function Tabletop({ roomCode }: Props) {
           if (cancelled) return;
           setSyncMode("server");
           setSyncError("");
-          setRoom(serverRoom);
-          syncProfileFromRoom(serverRoom, loadedProfile);
-          saveRoom(serverRoom);
+          const normalized = normalizeRoomState(serverRoom);
+          setRoom(normalized);
+          syncProfileFromRoom(normalized, loadedProfile);
+          saveRoom(normalized);
         })
         .catch(() => {
           if (cancelled) return;
@@ -205,8 +293,9 @@ export function Tabletop({ roomCode }: Props) {
           if (!supabaseRoom) throw new Error("Supabase is not configured.");
           setSyncMode("supabase");
           setSyncError("");
-          setRoom(supabaseRoom);
-          syncProfileFromRoom(supabaseRoom, loadedProfile);
+          const normalized = normalizeRoomState(supabaseRoom);
+          setRoom(normalized);
+          syncProfileFromRoom(normalized, loadedProfile);
         })
         .catch((error) => {
           if (cancelled) return;
@@ -230,11 +319,12 @@ export function Tabletop({ roomCode }: Props) {
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data) as RealtimeMessage;
       if (message.type === "room_snapshot") {
+        const normalized = normalizeRoomState(message.room);
         setSyncMode("websocket");
         setSyncError("");
-        setRoom(message.room);
-        syncProfileFromRoom(message.room, loadedProfile);
-        saveRoom(message.room);
+        setRoom(normalized);
+        syncProfileFromRoom(normalized, loadedProfile);
+        saveRoom(normalized);
         return;
       }
       if (message.type === "token_move_preview" || message.type === "token_move_commit") {
@@ -276,8 +366,9 @@ export function Tabletop({ roomCode }: Props) {
   useEffect(() => {
     if (!profile || syncMode !== "supabase") return;
     const unsubscribe = subscribeToSupabaseRoom(roomCode, (supabaseRoom) => {
-      setRoom(supabaseRoom);
-      saveRoom(supabaseRoom);
+      const normalized = normalizeRoomState(supabaseRoom);
+      setRoom(normalized);
+      saveRoom(normalized);
     });
 
     return () => {
@@ -294,14 +385,19 @@ export function Tabletop({ roomCode }: Props) {
           return response.json() as Promise<RoomState>;
         })
         .then((serverRoom) => {
-          setRoom(serverRoom);
-          saveRoom(serverRoom);
+          const normalized = normalizeRoomState(serverRoom);
+          setRoom(normalized);
+          saveRoom(normalized);
         })
         .catch(() => setSyncMode("local"));
     }, 1200);
 
     return () => window.clearInterval(interval);
   }, [profile, roomCode, syncMode]);
+
+  useEffect(() => {
+    loadLibraryItems().then(setLibraryItems).catch(() => setLibraryItems([]));
+  }, []);
 
   const currentMember = room?.members.find((member) => member.id === profile?.id);
   const isDm = currentMember?.role === "dm";
@@ -315,13 +411,34 @@ export function Tabletop({ roomCode }: Props) {
       : null;
   const selectedEffect =
     selectedBuildObject?.type === "effect" ? roomEffects.find((effect) => effect.id === selectedBuildObject.id) ?? null : null;
+  const combat = room?.combat;
+  const combatPhase = combat?.phase ?? (combat?.active ? "active" : "idle");
+  const combatEntries = combat?.entries ?? [];
+  const activeEntry = combatEntries[combat?.currentTurnIndex ?? 0] ?? null;
+  const activeCombatTokenId = combatPhase === "active" ? activeEntry?.tokenId ?? null : null;
+  const ownCombatEntries = profile ? combatEntries.filter((entry) => entry.ownerId === profile.id) : [];
+  const pendingCombatEntries = combatEntries.filter((entry) => !entry.submitted);
+  const initiativePromptEntry = isDm ? pendingCombatEntries[0] ?? null : ownCombatEntries.find((entry) => !entry.submitted) ?? null;
+  const hasInitiativeOverlay = combatPhase === "initiative";
+  const submittedInitiativeCount = combatEntries.filter((entry) => entry.submitted).length;
+  const nextEntry = combatPhase === "active" && combatEntries.length ? combatEntries[(combat?.currentTurnIndex ?? 0) + 1] ?? combatEntries[0] : null;
+  const hasLibraryTools = isDm && roomMode === "library";
+  const filteredLibraryItems = useMemo(() => {
+    const query = librarySearch.trim().toLowerCase();
+    return libraryItems
+      .filter((item) => item.kind === libraryKind)
+      .filter((item) => {
+        if (!query) return true;
+        return `${item.name} ${item.category} ${item.tokenType}`.toLowerCase().includes(query);
+      });
+  }, [libraryItems, libraryKind, librarySearch]);
 
   useEffect(() => {
     const channel = new BroadcastChannel(`dnd-room-${roomCode}`);
     channelRef.current = channel;
     channel.onmessage = (event: MessageEvent<RoomState>) => {
       if (syncMode === "websocket") return;
-      setRoom(event.data);
+      setRoom(normalizeRoomState(event.data));
     };
     return () => channel.close();
   }, [roomCode, syncMode]);
@@ -435,6 +552,29 @@ export function Tabletop({ roomCode }: Props) {
     setSelectedTokenId(token.id);
   }
 
+  function addLibraryItem(item: LibraryItem) {
+    if (!profile || !room || !currentMember) return;
+    const owner = currentMember;
+    const token: Token = {
+      id: createEntityId(item.kind === "object" ? "object" : "token"),
+      name: item.name,
+      icon: item.icon || (item.kind === "object" ? "□" : "●"),
+      imageName: item.imageName,
+      imageUrl: item.imageUrl,
+      type: item.kind === "object" ? "object" : item.tokenType,
+      ownerId: owner.id,
+      ownerName: owner.nickname,
+      color: owner.color,
+      x: 0,
+      y: 0,
+      size: item.size,
+      hp: item.hp,
+      note: item.note
+    };
+    updateRoom((current) => ({ ...current, tokens: [...current.tokens, token] }));
+    setSelectedTokenId(token.id);
+  }
+
   async function handleNewTokenImage(file: File | null) {
     if (!file) return;
     try {
@@ -516,14 +656,33 @@ export function Tabletop({ roomCode }: Props) {
     updateRoom((current) => ({
       ...current,
       tokens: current.tokens.filter((token) => token.id !== tokenId),
-      initiative: current.initiative.filter((entry) => entry.tokenId !== tokenId)
+      combat: {
+        ...current.combat,
+        currentTurnIndex: Math.max(
+          0,
+          Math.min(current.combat.currentTurnIndex, Math.max(0, current.combat.entries.filter((entry) => entry.tokenId !== tokenId).length - 1))
+        ),
+        entries: current.combat.entries.filter((entry) => entry.tokenId !== tokenId)
+      },
+      initiative: current.initiative?.filter((entry) => entry.tokenId !== tokenId)
     }));
   }
 
   function updateToken(tokenId: string, patch: Partial<Token>) {
     updateRoom((current) => ({
       ...current,
-      tokens: current.tokens.map((token) => (token.id === tokenId && canControl(token) ? { ...token, ...patch } : token))
+      tokens: current.tokens.map((token) => (token.id === tokenId && canControl(token) ? { ...token, ...patch } : token)),
+      combat: {
+        ...current.combat,
+        entries: current.combat.entries.map((entry) =>
+          entry.tokenId === tokenId
+            ? {
+                ...entry,
+                name: typeof patch.name === "string" ? patch.name : entry.name
+              }
+            : entry
+        )
+      }
     }));
   }
 
@@ -895,16 +1054,256 @@ export function Tabletop({ roomCode }: Props) {
     return visibleRolls().find((roll) => roll.userId === userId);
   }
 
-  function addInitiative(token: Token) {
+  function createInitiativeEntry(token: Token): InitiativeEntry {
+    return {
+      id: createEntityId("init"),
+      tokenId: token.id,
+      name: token.name,
+      ownerId: token.ownerId,
+      ownerName: token.ownerName,
+      dexModifier: 0,
+      total: 0,
+      mode: "normal",
+      conditions: [],
+      submitted: false,
+      createdAt: Date.now()
+    };
+  }
+
+  function addCombatEntry(token: Token) {
     updateRoom((current) => {
-      const existing = current.initiative.filter((entry) => entry.tokenId !== token.id);
+      if (current.combat.entries.some((entry) => entry.tokenId === token.id)) return current;
       return {
         ...current,
-        initiative: [...existing, { id: createEntityId("init"), tokenId: token.id, name: token.name, score: 10 }].sort(
-          (a, b) => b.score - a.score
-        )
+        combat: {
+          ...current.combat,
+          entries: [...current.combat.entries, createInitiativeEntry(token)]
+        }
       };
     });
+    if (isDm) setRoomMode("combat");
+  }
+
+  function startCombat() {
+    if (!isDm) return;
+    updateRoom((current) => {
+      const entriesByToken = new Map(current.combat.entries.map((entry) => [entry.tokenId, entry]));
+      const entries = current.tokens
+        .filter((token) => token.type !== "object")
+        .map((token) => {
+          const existing = entriesByToken.get(token.id);
+          return {
+            ...(existing ?? createInitiativeEntry(token)),
+            tokenId: token.id,
+            name: token.name,
+            ownerId: token.ownerId,
+            ownerName: token.ownerName,
+            roll: undefined,
+            total: 0,
+            submitted: false,
+            submittedAt: undefined,
+            submittedBy: undefined,
+            source: undefined
+          };
+        });
+      return {
+        ...current,
+        combat: {
+          ...current.combat,
+          active: false,
+          phase: "initiative",
+          round: 1,
+          currentTurnIndex: 0,
+          startedAt: Date.now(),
+          entries
+        }
+      };
+    });
+    setBuildMode(false);
+    setRoomMode("play");
+  }
+
+  function beginCombatRounds() {
+    if (!isDm) return;
+    updateRoom((current) => ({
+      ...current,
+      combat: {
+        ...current.combat,
+        active: true,
+        phase: "active",
+        round: current.combat.round || 1,
+        currentTurnIndex: 0,
+        entries: sortInitiativeEntries(current.combat.entries)
+      }
+    }));
+    setRoomMode("play");
+  }
+
+  function endCombat() {
+    if (!isDm) return;
+    updateRoom((current) => ({
+      ...current,
+      combat: {
+        ...current.combat,
+        active: false,
+        phase: "idle",
+        currentTurnIndex: 0
+      }
+    }));
+  }
+
+  function clearCombat() {
+    if (!isDm) return;
+    updateRoom((current) => ({
+      ...current,
+      combat: {
+        active: false,
+        phase: "idle",
+        round: 1,
+        currentTurnIndex: 0,
+        entries: []
+      },
+      initiative: []
+    }));
+  }
+
+  function submitInitiative(entryId: string, source: "app" | "manual" | "dm", manualTotal?: number) {
+    updateRoom((current) => {
+      const entries = current.combat.entries.map((entry) => {
+        if (entry.id !== entryId) return entry;
+        const isManualTotal = manualTotal !== undefined;
+        const mode: InitiativeRollMode = isManualTotal ? "manual" : entry.mode === "manual" ? "normal" : entry.mode;
+        const first = rollD20();
+        const second = mode === "normal" ? first : rollD20();
+        const roll = isManualTotal ? manualTotal : mode === "advantage" ? Math.max(first, second) : mode === "disadvantage" ? Math.min(first, second) : first;
+        const total = isManualTotal ? manualTotal : roll + entry.dexModifier;
+        return {
+          ...entry,
+          mode,
+          roll,
+          total,
+          submitted: true,
+          submittedAt: Date.now(),
+          submittedBy: profile?.id,
+          source
+        };
+      });
+      return {
+        ...current,
+        combat: {
+          ...current.combat,
+          currentTurnIndex: 0,
+          entries: current.combat.phase === "active" ? sortInitiativeEntries(entries) : entries
+        }
+      };
+    });
+  }
+
+  function rollInitiative(entryId: string) {
+    setInitiativeRollingId(entryId);
+    window.setTimeout(() => {
+      submitInitiative(entryId, isDm ? "dm" : "app");
+      setInitiativeRollingId((current) => (current === entryId ? null : current));
+    }, 700);
+  }
+
+  function submitManualInitiative(entryId: string) {
+    const total = Number(initiativeManualValues[entryId]);
+    if (!Number.isFinite(total)) return;
+    submitInitiative(entryId, isDm ? "dm" : "manual", total);
+  }
+
+  function updateInitiativeEntry(entryId: string, patch: Partial<InitiativeEntry>, shouldSort = true) {
+    updateRoom((current) => {
+      const entries = current.combat.entries.map((entry) => {
+        if (entry.id !== entryId) return entry;
+        const next = { ...entry, ...patch };
+        if (patch.dexModifier !== undefined && next.mode !== "manual" && next.roll !== undefined) {
+          next.total = next.roll + next.dexModifier;
+        }
+        return next;
+      });
+      return {
+        ...current,
+        combat: {
+          ...current.combat,
+          currentTurnIndex: Math.max(0, Math.min(current.combat.currentTurnIndex, Math.max(0, entries.length - 1))),
+          entries: shouldSort ? sortInitiativeEntries(entries) : entries
+        }
+      };
+    });
+  }
+
+  function removeInitiativeEntry(entryId: string) {
+    if (!isDm) return;
+    updateRoom((current) => {
+      const entries = current.combat.entries.filter((entry) => entry.id !== entryId);
+      return {
+        ...current,
+        combat: {
+          ...current.combat,
+          currentTurnIndex: Math.max(0, Math.min(current.combat.currentTurnIndex, Math.max(0, entries.length - 1))),
+          entries
+        }
+      };
+    });
+  }
+
+  function moveInitiativeEntry(entryId: string, direction: -1 | 1) {
+    if (!isDm) return;
+    updateRoom((current) => {
+      const index = current.combat.entries.findIndex((entry) => entry.id === entryId);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.combat.entries.length) return current;
+      const entries = [...current.combat.entries];
+      const [entry] = entries.splice(index, 1);
+      entries.splice(target, 0, entry);
+      return {
+        ...current,
+        combat: {
+          ...current.combat,
+          currentTurnIndex: current.combat.currentTurnIndex === index ? target : current.combat.currentTurnIndex,
+          entries
+        }
+      };
+    });
+  }
+
+  function advanceTurn(direction: 1 | -1) {
+    if (!isDm) return;
+    updateRoom((current) => {
+      const count = current.combat.entries.length;
+      if (!count) return current;
+      let nextIndex = current.combat.currentTurnIndex + direction;
+      let nextRound = current.combat.round || 1;
+      if (nextIndex >= count) {
+        nextIndex = 0;
+        nextRound += 1;
+      }
+      if (nextIndex < 0) {
+        nextIndex = count - 1;
+        nextRound = Math.max(1, nextRound - 1);
+      }
+      return {
+        ...current,
+        combat: {
+          ...current.combat,
+          active: true,
+          phase: "active",
+          currentTurnIndex: nextIndex,
+          round: nextRound
+        }
+      };
+    });
+  }
+
+  function selectRoomMode(mode: RoomMode) {
+    setRoomMode(mode);
+    if (mode === "build") {
+      if (isDm) setBuildMode(true);
+      return;
+    }
+    setBuildMode(false);
   }
 
   if (!profile || !room) {
@@ -930,6 +1329,26 @@ export function Tabletop({ roomCode }: Props) {
           <p>{isDm ? "You are the DM. You can edit the map and all tokens." : "You are a player. You control your own tokens."}</p>
         </div>
         <div className="room-actions">
+          {isDm ? (
+            <nav className="dm-mode-rail" aria-label="DM room modes">
+              <button className={roomMode === "play" ? "selected" : ""} onClick={() => selectRoomMode("play")} type="button">
+                <span>Table</span>
+                <small>Tokens</small>
+              </button>
+              <button className={roomMode === "combat" ? "selected" : ""} onClick={() => selectRoomMode("combat")} type="button">
+                <span>Combat</span>
+                <small>Turns</small>
+              </button>
+              <button className={roomMode === "build" ? "selected" : ""} onClick={() => selectRoomMode("build")} type="button">
+                <span>Build</span>
+                <small>Map</small>
+              </button>
+              <button className={roomMode === "library" ? "selected" : ""} onClick={() => selectRoomMode("library")} type="button">
+                <span>Library</span>
+                <small>Presets</small>
+              </button>
+            </nav>
+          ) : null}
           <span className={syncMode === "server" || syncMode === "supabase" || syncMode === "websocket" ? "sync-badge online" : "sync-badge"}>
             {syncMode === "supabase"
               ? "Supabase realtime"
@@ -957,9 +1376,13 @@ export function Tabletop({ roomCode }: Props) {
           const latest = latestRollFor(member.id);
           return (
             <article className="profile-chip" key={member.id} style={{ borderColor: member.color }}>
-              <div className="avatar" style={{ background: member.color }}>
-                {member.nickname.slice(0, 1).toUpperCase()}
-              </div>
+              {member.avatarUrl ? (
+                <img className="avatar avatar-image" alt="" draggable={false} src={member.avatarUrl} />
+              ) : (
+                <div className="avatar" style={{ background: member.color }}>
+                  {member.nickname.slice(0, 1).toUpperCase()}
+                </div>
+              )}
               <div>
                 <strong>{member.nickname}</strong>
                 <span>{member.role.toUpperCase()}</span>
@@ -977,7 +1400,7 @@ export function Tabletop({ roomCode }: Props) {
         })}
       </section>
 
-      {isDm ? (
+      {isDm && roomMode === "build" ? (
         <section className="build-ribbon" aria-label="DM build ribbon">
           <div className="ribbon-title">
             <h2>Build Mode</h2>
@@ -987,7 +1410,14 @@ export function Tabletop({ roomCode }: Props) {
             <span className="ribbon-label">Mode</span>
             <button
               className={buildMode ? "primary-action compact" : "secondary-action compact"}
-              onClick={() => setBuildMode((current) => !current)}
+              onClick={() => {
+                if (buildMode) {
+                  setBuildMode(false);
+                  setRoomMode("play");
+                  return;
+                }
+                setBuildMode(true);
+              }}
               type="button"
             >
               {buildMode ? "Exit Build" : "Enter Build"}
@@ -1210,8 +1640,9 @@ export function Tabletop({ roomCode }: Props) {
         </section>
       ) : null}
 
-      <div className="workspace">
+      <div className={`workspace map-first mode-${roomMode}`}>
         <aside className="side-panel">
+          {roomMode === "play" || roomMode === "combat" ? (
           <section className="tool-card">
             <div className="panel-heading">
               <h2>Dice</h2>
@@ -1236,7 +1667,9 @@ export function Tabletop({ roomCode }: Props) {
             </label>
             {diceError ? <p className="error-text">{diceError}</p> : null}
           </section>
+          ) : null}
 
+          {roomMode === "play" ? (
           <section className="tool-card">
             <div className="panel-heading">
               <h2>Tokens</h2>
@@ -1291,8 +1724,52 @@ export function Tabletop({ roomCode }: Props) {
             ) : null}
             {imageError ? <p className="error-text">{imageError}</p> : null}
           </section>
+          ) : null}
 
-          {selectedToken ? (
+          {isDm && hasLibraryTools ? (
+            <section className="tool-card library-panel">
+              <div className="panel-heading">
+                <h2>Build Library</h2>
+                <span>{filteredLibraryItems.length} shown</span>
+              </div>
+              <div className="mode-tabs" aria-label="In-game library kind">
+                <button className={libraryKind === "token" ? "selected" : ""} onClick={() => setLibraryKind("token")} type="button">
+                  Tokens
+                </button>
+                <button className={libraryKind === "object" ? "selected" : ""} onClick={() => setLibraryKind("object")} type="button">
+                  Objects
+                </button>
+              </div>
+              <input
+                aria-label="Filter build library"
+                placeholder="Filter shared library"
+                value={librarySearch}
+                onChange={(event) => setLibrarySearch(event.target.value)}
+              />
+              <div className="library-list">
+                {filteredLibraryItems.length ? (
+                  filteredLibraryItems.map((item) => (
+                    <article key={item.id}>
+                      {item.imageUrl ? <img alt="" draggable={false} src={item.imageUrl} /> : <span>{item.icon}</span>}
+                      <div>
+                        <strong>{item.name}</strong>
+                        <small>
+                          {item.category} · size {item.size}
+                        </small>
+                      </div>
+                      <button className="secondary-action compact" onClick={() => addLibraryItem(item)} type="button">
+                        Place
+                      </button>
+                    </article>
+                  ))
+                ) : (
+                  <p className="empty-state">Create shared presets in the DM dashboard.</p>
+                )}
+              </div>
+            </section>
+          ) : null}
+
+          {selectedToken && roomMode === "play" ? (
             <section className="tool-card">
               <div className="panel-heading">
                 <h2>Selected Token</h2>
@@ -1382,36 +1859,136 @@ export function Tabletop({ roomCode }: Props) {
             </section>
           ) : null}
 
-          <section>
-            <div className="panel-heading">
-              <h2>Initiative</h2>
-              <span>Turn order</span>
-            </div>
-            {room.initiative.length ? (
-              <ol className="initiative-list">
-                {room.initiative.map((entry) => (
-                  <li key={entry.id}>
-                    <span>{entry.name}</span>
-                    <input
-                      disabled={!isDm}
-                      value={entry.score}
-                      type="number"
-                      onChange={(event) =>
-                        updateRoom((current) => ({
-                          ...current,
-                          initiative: current.initiative
-                            .map((item) => (item.id === entry.id ? { ...item, score: Number(event.target.value) } : item))
-                            .sort((a, b) => b.score - a.score)
-                        }))
-                      }
-                    />
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p className="empty-state">Add tokens to initiative from the token list.</p>
-            )}
-          </section>
+          {roomMode === "combat" ? (
+            <section className="tool-card combat-panel">
+              <div className="panel-heading">
+                <h2>Combat Controls</h2>
+                <span>{combatPhase === "active" ? `Round ${combat?.round}` : combatPhase === "initiative" ? "Rolling" : "Setup"}</span>
+              </div>
+              {isDm ? (
+                <div className="combat-actions">
+                  <button className="primary-action compact" onClick={startCombat} type="button">
+                    {combatPhase === "idle" ? "Start combat" : "Restart initiative"}
+                  </button>
+                  <button className="secondary-action compact" disabled={!combatEntries.length || combatPhase !== "initiative"} onClick={beginCombatRounds} type="button">
+                    Begin round
+                  </button>
+                  <button className="secondary-action compact" disabled={!combatEntries.length || combatPhase !== "active"} onClick={() => advanceTurn(-1)} type="button">
+                    Previous
+                  </button>
+                  <button className="secondary-action compact" disabled={!combatEntries.length || combatPhase !== "active"} onClick={() => advanceTurn(1)} type="button">
+                    Next turn
+                  </button>
+                  <button className="secondary-action compact" disabled={combatPhase === "idle"} onClick={endCombat} type="button">
+                    End combat
+                  </button>
+                </div>
+              ) : null}
+              {combatPhase === "active" && activeEntry ? (
+                <article className="active-turn-card">
+                  <span>Current turn</span>
+                  <strong>{activeEntry.name}</strong>
+                  <small>
+                    {activeEntry.total} initiative {activeEntry.conditions.length ? `· ${activeEntry.conditions.join(", ")}` : ""}
+                  </small>
+                </article>
+              ) : combatPhase === "initiative" ? (
+                <article className="active-turn-card">
+                  <span>Initiative rolling</span>
+                  <strong>{submittedInitiativeCount}/{combatEntries.length} submitted</strong>
+                  <small>{pendingCombatEntries.length ? `${pendingCombatEntries.length} still waiting` : "Ready to begin the first round"}</small>
+                </article>
+              ) : (
+                <p className="empty-state">Start combat or add tokens to build a turn order.</p>
+              )}
+              {combatEntries.length ? (
+                <ol className="initiative-list combat-list">
+                  {combatEntries.map((entry, index) => {
+                    const canEditEntry = isDm || entry.ownerId === profile.id;
+                    return (
+                      <li className={activeCombatTokenId === entry.tokenId ? "current" : ""} key={entry.id}>
+                        <div className="initiative-rank">{index + 1}</div>
+                        <div className="initiative-main">
+                          <strong>{entry.name}</strong>
+                          <small>{entry.ownerName}</small>
+                          <div className="initiative-controls">
+                            <label>
+                              Mode
+                              <select
+                                disabled={!canEditEntry}
+                                value={entry.mode}
+                                onChange={(event) => updateInitiativeEntry(entry.id, { mode: event.target.value as InitiativeRollMode }, false)}
+                              >
+                                {INITIATIVE_MODES.map((mode) => (
+                                  <option key={mode} value={mode}>
+                                    {mode}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Dex
+                              <input
+                                disabled={!canEditEntry}
+                                type="number"
+                                value={entry.dexModifier}
+                                onChange={(event) => updateInitiativeEntry(entry.id, { dexModifier: Number(event.target.value) })}
+                              />
+                            </label>
+                            <label>
+                              Total
+                              <input
+                                disabled={!canEditEntry}
+                                type="number"
+                                value={entry.total}
+                                onChange={(event) => updateInitiativeEntry(entry.id, { mode: "manual", roll: Number(event.target.value), total: Number(event.target.value) })}
+                              />
+                            </label>
+                          </div>
+                          <label>
+                            Conditions
+                            <input
+                              disabled={!canEditEntry}
+                              placeholder="blessed, prone"
+                              value={entry.conditions.join(", ")}
+                              onChange={(event) => updateInitiativeEntry(entry.id, { conditions: splitConditions(event.target.value) }, false)}
+                            />
+                          </label>
+                        </div>
+                        <div className="initiative-actions">
+                          <button disabled={!canEditEntry || entry.mode === "manual"} onClick={() => rollInitiative(entry.id)} type="button">
+                            Roll
+                          </button>
+                          {isDm ? (
+                            <>
+                              <button disabled={index === 0} onClick={() => moveInitiativeEntry(entry.id, -1)} type="button">
+                                Up
+                              </button>
+                              <button disabled={index === combatEntries.length - 1} onClick={() => moveInitiativeEntry(entry.id, 1)} type="button">
+                                Down
+                              </button>
+                              <button onClick={() => removeInitiativeEntry(entry.id)} type="button">
+                                Remove
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : null}
+              {isDm ? (
+                <button className="secondary-action compact danger" disabled={!combatEntries.length} onClick={clearCombat} type="button">
+                  Clear initiative
+                </button>
+              ) : ownCombatEntries.length ? (
+                <p className="empty-state">Your position is shown in the turn order. The DM controls turn advancement.</p>
+              ) : (
+                <p className="empty-state">Ask the DM to add your token to initiative.</p>
+              )}
+            </section>
+          ) : null}
         </aside>
 
         <section className="map-wrap" aria-label="Battle map">
@@ -1419,7 +1996,13 @@ export function Tabletop({ roomCode }: Props) {
             <span>{room.grid.columns} x {room.grid.rows}</span>
             <span>{room.tokens.length} tokens</span>
             <span>{roomEffects.length} effects</span>
-            <span>{buildMode ? `Build: ${buildTool === "wall" ? "Walls" : buildTool}` : "Token mode"}</span>
+            <span>
+              {combat?.active && activeEntry
+                ? `Round ${combat.round}: ${activeEntry.name}`
+                : buildMode
+                  ? `Build: ${buildTool === "wall" ? "Walls" : buildTool}`
+                  : `${roomMode[0].toUpperCase()}${roomMode.slice(1)} mode`}
+            </span>
           </div>
           <div
             className={buildMode ? "board build-active" : "board"}
@@ -1576,7 +2159,14 @@ export function Tabletop({ roomCode }: Props) {
 
             {room.tokens.map((token) => (
               <div
-                className={canControl(token) ? "token controllable" : "token"}
+                className={[
+                  "token",
+                  canControl(token) ? "controllable" : "",
+                  selectedTokenId === token.id ? "selected" : "",
+                  activeCombatTokenId === token.id ? "active-turn" : ""
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 key={token.id}
                 onPointerDown={(event) => {
                   if (buildMode) return;
@@ -1604,13 +2194,14 @@ export function Tabletop({ roomCode }: Props) {
                 ) : (
                   <span>{token.icon}</span>
                 )}
+                {activeCombatTokenId === token.id ? <strong className="turn-label">{token.name}'s turn</strong> : null}
               </div>
             ))}
           </div>
         </section>
 
         <aside className="right-panel">
-          {isDm && (selectedWall || selectedEffect) ? (
+          {isDm && roomMode === "build" && (selectedWall || selectedEffect) ? (
             <section className="tool-card">
               <div className="panel-heading">
                 <h2>Selected Object</h2>
@@ -1689,6 +2280,7 @@ export function Tabletop({ roomCode }: Props) {
             </section>
           ) : null}
 
+          {roomMode === "play" || roomMode === "combat" ? (
           <section className="tool-card">
             <div className="panel-heading">
               <h2>Room Log</h2>
@@ -1711,6 +2303,7 @@ export function Tabletop({ roomCode }: Props) {
               <p className="empty-state">Dice results will appear here.</p>
             )}
           </section>
+          ) : null}
 
           <section className="tool-card">
             <div className="panel-heading">
@@ -1735,7 +2328,7 @@ export function Tabletop({ roomCode }: Props) {
                         Edit
                       </button>
                       {isDm ? (
-                        <button onClick={() => addInitiative(token)} type="button">
+                        <button onClick={() => addCombatEntry(token)} type="button">
                           Init
                         </button>
                       ) : null}
@@ -1754,6 +2347,104 @@ export function Tabletop({ roomCode }: Props) {
           </section>
         </aside>
       </div>
+      {hasInitiativeOverlay ? (
+        <section className="initiative-overlay" role="dialog" aria-modal="true" aria-labelledby="initiative-title">
+          <div className="initiative-modal" aria-live="polite">
+            <span className="initiative-kicker">DM Started Combat</span>
+            <h2 id="initiative-title">Roll for initiative</h2>
+            <p>
+              {initiativePromptEntry
+                ? `Use the app roller or enter the initiative you rolled at the table for ${initiativePromptEntry.name}.`
+                : isDm
+                  ? "Everyone has an initiative entry. Review the order, then begin the first round."
+                  : "Your initiative is submitted. Waiting for the DM to begin the first round."}
+            </p>
+
+            {initiativePromptEntry ? (
+              <article className="initiative-focus-card">
+                <div>
+                  <span>Token</span>
+                  <strong>{initiativePromptEntry.name}</strong>
+                  <small>{initiativePromptEntry.ownerName}</small>
+                </div>
+                <div className="initiative-prompt-controls">
+                  <label>
+                    Modifier
+                    <input
+                      type="number"
+                      value={initiativePromptEntry.dexModifier}
+                      onChange={(event) => updateInitiativeEntry(initiativePromptEntry.id, { dexModifier: Number(event.target.value) }, false)}
+                    />
+                  </label>
+                  <label>
+                    Roll style
+                    <select
+                      value={initiativePromptEntry.mode === "manual" ? "normal" : initiativePromptEntry.mode}
+                      onChange={(event) => updateInitiativeEntry(initiativePromptEntry.id, { mode: event.target.value as InitiativeRollMode }, false)}
+                    >
+                      <option value="normal">Normal</option>
+                      <option value="advantage">Advantage</option>
+                      <option value="disadvantage">Disadvantage</option>
+                    </select>
+                  </label>
+                </div>
+                <button
+                  className={initiativeRollingId === initiativePromptEntry.id ? "dice-roll-button rolling" : "dice-roll-button"}
+                  disabled={initiativeRollingId === initiativePromptEntry.id}
+                  onClick={() => rollInitiative(initiativePromptEntry.id)}
+                  type="button"
+                >
+                  <span aria-hidden="true">{initiativeRollingId === initiativePromptEntry.id ? "20" : "d20"}</span>
+                  {initiativeRollingId === initiativePromptEntry.id ? "Rolling..." : "Roll d20"}
+                </button>
+                <div className="manual-initiative-row">
+                  <label>
+                    Rolled at table
+                    <input
+                      inputMode="numeric"
+                      placeholder="Total"
+                      value={initiativeManualValues[initiativePromptEntry.id] ?? ""}
+                      onChange={(event) =>
+                        setInitiativeManualValues((current) => ({
+                          ...current,
+                          [initiativePromptEntry.id]: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+                  <button
+                    className="secondary-action compact"
+                    disabled={!initiativeManualValues[initiativePromptEntry.id]}
+                    onClick={() => submitManualInitiative(initiativePromptEntry.id)}
+                    type="button"
+                  >
+                    Submit
+                  </button>
+                </div>
+              </article>
+            ) : null}
+
+            <div className="initiative-status-grid">
+              <span>{submittedInitiativeCount} submitted</span>
+              <span>{pendingCombatEntries.length} waiting</span>
+              {isDm ? (
+                <button className="primary-action compact" disabled={!combatEntries.length} onClick={beginCombatRounds} type="button">
+                  Begin round
+                </button>
+              ) : null}
+            </div>
+
+            <ol className="initiative-submit-list">
+              {combatEntries.map((entry) => (
+                <li className={entry.submitted ? "submitted" : "waiting"} key={entry.id}>
+                  <strong>{entry.name}</strong>
+                  <span>{entry.submitted ? `${entry.total} initiative` : "Waiting"}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }

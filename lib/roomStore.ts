@@ -39,7 +39,13 @@ export function createServerRoom(roomCode: string, profile: GuestProfile): RoomS
     drawings: [],
     effects: [],
     rolls: [],
-    initiative: []
+    combat: {
+      active: false,
+      phase: "idle",
+      round: 1,
+      currentTurnIndex: 0,
+      entries: []
+    }
   };
 }
 

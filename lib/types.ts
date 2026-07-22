@@ -4,6 +4,8 @@ export type GuestProfile = {
   id: string;
   nickname: string;
   color: string;
+  avatarUrl?: string;
+  avatarName?: string;
 };
 
 export type RoomMember = GuestProfile & {
@@ -50,6 +52,34 @@ export type Token = {
   note?: string;
 };
 
+export type DMRoomSummary = {
+  id: string;
+  roomCode: string;
+  name: string;
+  dmUserId: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type LibraryItemKind = "token" | "object";
+
+export type LibraryItem = {
+  id: string;
+  kind: LibraryItemKind;
+  name: string;
+  category: string;
+  icon: string;
+  imageUrl?: string;
+  imageName?: string;
+  tokenType: TokenType;
+  size: number;
+  hp?: string;
+  note?: string;
+  createdBy?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type DrawingLine = {
   id: string;
   kind?: "freehand" | "wall";
@@ -85,11 +115,43 @@ export type DiceRoll = {
   createdAt: number;
 };
 
+export type InitiativeRollMode = "manual" | "normal" | "advantage" | "disadvantage";
+export type CombatPhase = "idle" | "initiative" | "active";
+export type InitiativeSource = "app" | "manual" | "dm";
+
 export type InitiativeEntry = {
   id: string;
   tokenId: string;
   name: string;
+  ownerId: string;
+  ownerName: string;
+  dexModifier: number;
+  roll?: number;
+  total: number;
+  mode: InitiativeRollMode;
+  conditions: string[];
+  submitted: boolean;
+  submittedAt?: number;
+  submittedBy?: string;
+  source?: InitiativeSource;
+  skipped?: boolean;
+  createdAt: number;
+};
+
+export type LegacyInitiativeEntry = {
+  id: string;
+  tokenId: string;
+  name: string;
   score: number;
+};
+
+export type CombatState = {
+  active: boolean;
+  phase: CombatPhase;
+  round: number;
+  currentTurnIndex: number;
+  entries: InitiativeEntry[];
+  startedAt?: number;
 };
 
 export type RoomState = {
@@ -102,5 +164,6 @@ export type RoomState = {
   drawings: DrawingLine[];
   effects: AreaEffectTemplate[];
   rolls: DiceRoll[];
-  initiative: InitiativeEntry[];
+  combat: CombatState;
+  initiative?: LegacyInitiativeEntry[];
 };
