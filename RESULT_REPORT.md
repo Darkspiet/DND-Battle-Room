@@ -1,3 +1,5 @@
+> Historical report for an earlier version. Current setup and verification are documented in README.md, docs/PROJECT_RULEBOOK.md, and docs/RELEASE-v1.0.0.md.
+
 # DND Battle Room End Report
 
 ## What Changed

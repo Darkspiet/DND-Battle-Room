@@ -11,6 +11,7 @@ export async function POST(request: NextRequest) {
     const result = await signInLocalDMAccount(String(body.username ?? ""), String(body.password ?? ""));
     (await cookies()).set(SESSION_COOKIE, result.sessionToken, {
       httpOnly: true,
+      secure: process.env.APP_URL?.startsWith("https://") ?? false,
       sameSite: "lax",
       maxAge: SESSION_MAX_AGE,
       path: "/"

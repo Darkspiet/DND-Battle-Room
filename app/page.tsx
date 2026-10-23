@@ -1,11 +1,12 @@
 import Link from "next/link";
+import { getSiteName } from "../lib/siteConfig";
 
 export default function HomePage() {
   return (
     <main className="app-shell start-shell">
       <section className="start-hero">
         <div className="start-copy">
-          <h1>DND Battle Room</h1>
+          <h1>{getSiteName()}</h1>
           <p>
             A focused tabletop command room for encounter maps, initiative, shared dice, and reusable combat pieces.
           </p>

@@ -1,6 +1,6 @@
 {
   "name": "dnd-battle-room",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "node server.mjs",
@@ -8,12 +8,14 @@
     "start": "node server.mjs",
     "lint": "tsc --noEmit -p tsconfig.typecheck.json",
     "test:e2e": "playwright test",
-    "test:e2e:local": "PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 playwright test",
+    "test:e2e:local": "playwright test",
     "db:apply": "node scripts/apply-db-schema.mjs",
     "install:production": "bash scripts/install-production.sh",
     "verify": "npm run typecheck && npm run test:e2e && npm run build",
     "deploy:restart": "systemctl restart dnd-battle-room",
-    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json"
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "bootstrap:dm": "node scripts/bootstrap-dm.mjs",
+    "test:installer": "node --test tests/installer/*.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.0",
@@ -34,5 +36,9 @@
   },
   "overrides": {
     "postcss": "8.5.10"
-  }
+  },
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "license": "MIT"
 }

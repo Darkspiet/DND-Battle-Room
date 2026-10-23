@@ -1,3 +1,5 @@
+import './scripts/load-config.mjs';
+import { Pool } from 'pg';
 import { createServer } from "node:http";
 import next from "next";
 import { WebSocketServer, WebSocket } from "ws";
@@ -183,6 +185,13 @@ function isValidProfile(profile) {
   return Boolean(profile?.id && profile?.nickname && profile?.color);
 }
 
+if (!dev) {
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required in production; JSON storage is development-only.');
+  const database = new Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10000 });
+  try { await database.query('select id from dm_profiles limit 0'); }
+  catch { throw new Error('Production PostgreSQL is unavailable or schema is missing. Check configuration and run db:apply.'); }
+  finally { await database.end(); }
+}
 await app.prepare();
 handleUpgrade = app.getUpgradeHandler();
 

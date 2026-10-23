@@ -107,7 +107,7 @@ export default function DMLoginPage() {
 
         {!hasSupabase ? (
           <p className="sync-warning">
-            Using the local DM database for this device. Add Supabase env vars and apply <code>supabase/schema.sql</code> when you want hosted accounts.
+            DM accounts are managed by this server. Sign in or create a DM profile to save your rooms.
           </p>
         ) : null}
 

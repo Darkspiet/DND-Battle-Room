@@ -1,18 +1,24 @@
 [Unit]
-Description=DND Battle Room Next.js app
-After=network-online.target
+Description=DND Battle Room
+After=network-online.target postgresql.service
 Wants=network-online.target
+Requires=postgresql.service
 
 [Service]
 Type=simple
-WorkingDirectory=/root/DND
+User=dnd-battle-room
+Group=dnd-battle-room
+WorkingDirectory=/opt/dnd-battle-room
 Environment=NODE_ENV=production
-Environment=HOSTNAME=0.0.0.0
-Environment=PORT=3000
-EnvironmentFile=-/root/DND/.env.production
-ExecStart=/usr/bin/npm run start
-Restart=always
+Environment=DND_CONFIG_FILE=/etc/dnd-battle-room/config.json
+ExecStart=/opt/dnd-battle-room-node/bin/node server.mjs
+Restart=on-failure
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

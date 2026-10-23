@@ -1,3 +1,4 @@
+import { hashPassword, normalizeUsername, validateCredentials } from "./authCredentials.mjs";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -30,17 +31,16 @@ const SESSION_MAX_AGE_SECONDS = SESSION_MAX_AGE / 1000;
 let pool: Pool | null = null;
 
 function getPool() {
-  if (!process.env.DATABASE_URL) return null;
+  if (!process.env.DATABASE_URL) {
+    if (process.env.NODE_ENV === "production") throw new Error("DATABASE_URL is required in production.");
+    return null;
+  }
   pool ??= new Pool({ connectionString: process.env.DATABASE_URL });
   return pool;
 }
 
 function emptyDatabase(): DMDatabase {
   return { profiles: [], sessions: {}, rooms: [], library: [] };
-}
-
-function normalizeUsername(username: string) {
-  return username.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
 }
 
 function publicProfile(profile: StoredDMProfile): DMUser {
@@ -84,13 +84,6 @@ async function writeDatabase(database: DMDatabase) {
   await writeFile(DB_PATH, JSON.stringify(database, null, 2));
 }
 
-function hashPassword(password: string, salt = randomBytes(16).toString("hex")) {
-  return {
-    salt,
-    hash: scryptSync(password, salt, 64).toString("hex")
-  };
-}
-
 function passwordMatches(password: string, profile: StoredDMProfile) {
   const attempted = Buffer.from(hashPassword(password, profile.passwordSalt).hash, "hex");
   const stored = Buffer.from(profile.passwordHash, "hex");
@@ -127,9 +120,7 @@ export async function createLocalDMAccount(input: {
   avatarUrl?: string;
   avatarName?: string;
 }) {
-  const username = normalizeUsername(input.username);
-  if (username.length < 3) throw new Error("Use at least 3 letters or numbers for the username.");
-  if (input.password.length < 4) throw new Error("Use a password with at least 4 characters.");
+  const username = validateCredentials(input.username, input.password);
   const db = getPool();
   if (db) {
     const now = Date.now();
