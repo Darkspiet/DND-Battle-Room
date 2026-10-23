@@ -68,3 +68,12 @@ Validation: the exact PostgreSQL CI test command passed 10 consecutive local run
 Guest name/avatar inputs remain disabled until stored preferences have loaded and the room is verified open. Previously an early name edit could be replaced by the initial profile effect on a slower browser/CI runner. The reassignment test now holds JavaScript loading to exercise this boundary, verifies the chosen name in the join response and uses that server-issued profile id instead of searching by display name.
 
 Validation: the delayed-hydration regression failed against the original enabled input and passed after the fix. Typecheck, all 19 Chromium tests and the production build passed locally in the required order. GitHub Actions still requires a new run.
+
+
+## Modular code and README refresh
+
+The app remains one service with the same installer, dependencies, schema and HTTP/WebSocket interfaces. Tabletop is now a 126-line composition page; focused room connection, board, token and combat hooks serve typed view components. There is one synchronization/mutation queue, and changing modes preserves unfinished form inputs. Backend authentication, room and library operations sit behind the existing backend exports; all 26 extracted backend functions retain their original syntax structure apart from formatting/export modifiers.
+
+README now introduces gameplay and a captured synthetic encounter before installation and first login. Detailed service/recovery/backup/update instructions moved to OPERATIONS.md; local setup, testing and module ownership moved to DEVELOPMENT.md. The README screenshot is a reviewed application capture with synthetic players, tokens, walls, effects and a current turn; no credentials or real player data are included.
+
+Local validation passed: typecheck, 21 Chromium tests, production build, 10 backend/provisioning/installer Node tests, 2 Python configuration tests and the post-build production HTTP/WebSocket security test. Desktop/mobile encounter captures were reviewed, and README/guide links and section anchors were checked. The additional mode-switch test verifies that dice, token, background and library inputs survive navigation. No new dependency, deployment, schema migration, tag or publication was introduced. Existing external Ubuntu/HTTPS release gates still apply.

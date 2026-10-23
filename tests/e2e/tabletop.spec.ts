@@ -347,3 +347,25 @@ test("relative room links preserve preview proxy prefixes", async ({ page }) => 
   });
   expect(resolved).toBe("/proxy/3000/room/PROXY1");
 });
+
+
+test("keeps unfinished controls when switching tabletop modes", async ({ page }) => {
+  await createRoom(page);
+  const dice = page.locator('section').filter({has:page.getByRole('heading',{name:'Dice',exact:true})});
+  await dice.locator('.dice-row input').fill('2d6+3');
+  await dice.getByLabel('Private roll').check();
+  await page.getByLabel('Token name').fill('Unfinished character');
+  await openDmTool(page,'Build');
+  await page.getByRole('button',{name:'Background',exact:true}).click();
+  await page.getByLabel('Battlefield image URL').fill('https://example.com/unsaved-map.png');
+  await openDmTool(page,'Library');
+  await page.getByLabel('Filter build library').fill('Unsaved search');
+  await openDmTool(page,'Table');
+  await expect(dice.locator('.dice-row input')).toHaveValue('2d6+3');
+  await expect(dice.getByLabel('Private roll')).toBeChecked();
+  await expect(page.getByLabel('Token name')).toHaveValue('Unfinished character');
+  await openDmTool(page,'Build');
+  await expect(page.getByLabel('Battlefield image URL')).toHaveValue('https://example.com/unsaved-map.png');
+  await openDmTool(page,'Library');
+  await expect(page.getByLabel('Filter build library')).toHaveValue('Unsaved search');
+});

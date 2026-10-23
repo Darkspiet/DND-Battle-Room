@@ -1,4 +1,4 @@
-import type { RoomState, Token } from './types';
+import type { RoomState } from './types';
 export type RoomCommand = { type: string; payload: Record<string, unknown> };
 const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
 function changes(a:object,b:object,keys:string[]) {

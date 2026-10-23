@@ -41,3 +41,12 @@ Run typecheck, PostgreSQL-backed Playwright on 3100, then production build in th
 Schema belongs in db/schema.sql and must be repeatable without account resets or data loss. Backups include complete encounters and private fields. README documents protected PostgreSQL/config backups, restore to an empty database, manual updates and troubleshooting. No unattended updates.
 
 MIT license, v1.0.0, private:true prevents accidental npm publication. Review the tree and reachable Git history for credentials/private information; rotate confirmed exposed secrets before publication. Never rewrite history automatically. Ubuntu x86-64/ARM64 install/retry/reboot/public HTTPS and backup/restore acceptance remain mandatory before publication. Final diff review precedes tag creation, repository visibility changes and GitHub release publication. Local preparation does not authorize deployment or publication.
+
+
+## Module boundaries and documentation
+
+Keep Tabletop as page composition. The tabletop connection hook alone owns room admission, HTTP/WS lifecycle, saved snapshots and command queuing. Board interaction/undo, token controls and combat state have focused hooks; form-only state stays with the relevant view. Mode changes must preserve unfinished input. Geometry is pure. Views receive explicit typed props and never create their own persistence mechanism.
+
+The backend entry point retains its existing exports while authentication/sessions, room operations and shared-library code live in separate server modules. Command authorization, row locking, commits and recipient privacy filtering remain centralized. Internal modules import each other directly rather than through the facade.
+
+README introduces gameplay, a synthetic encounter screenshot, features and the DM/player workflow before installation. Detailed administration belongs in OPERATIONS.md; local setup, module ownership and verification belong in DEVELOPMENT.md. Keep those guides linked from README and update them with behavior changes. This remains one repository, one app service and one installer, with no new deployment dependencies.
