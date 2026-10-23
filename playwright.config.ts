@@ -6,7 +6,11 @@ if (testURL.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(testURL
   throw new Error("Playwright requires a local temporary HTTP port, normally 3100; never use production port 3000.");
 }
 
+if (!process.env.TEST_DATABASE_URL || !new URL(process.env.TEST_DATABASE_URL).pathname.toLowerCase().includes('test')) {
+  throw new Error('Set TEST_DATABASE_URL to a dedicated PostgreSQL database whose name contains test. Production databases are never used for tests.');
+}
 export default defineConfig({
+  workers: 1,
   testDir: "./tests/e2e",
   timeout: 30_000,
   expect: {

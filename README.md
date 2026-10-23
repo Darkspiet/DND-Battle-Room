@@ -38,9 +38,9 @@ The installer downloads the tagged source, installs Node.js 24 LTS and local Pos
 | `dnd-battle-room.service` | App running as the dedicated `dnd-battle-room` user |
 | `/etc/caddy/Caddyfile` | HTTPS proxy to `127.0.0.1:3000`, including `/ws` |
 
-The installer uses JSON rather than shell-sourcing secrets. Never run `source` on configuration. `DATABASE_URL`, `SITE_NAME`, `APP_URL`, and the generated `SESSION_SECRET` are loaded on startup. `INSTALL_*` fields are reserved for retries and are not exported to the app. The existing session implementation uses random database-backed tokens; `SESSION_SECRET` is retained for compatibility and is not its signing key.
+The installer uses JSON rather than shell-sourcing secrets. Never run `source` on configuration. `DATABASE_URL`, `SITE_NAME`, `APP_URL`, and `TRUST_PROXY` are loaded on startup. `INSTALL_*` fields are reserved for retries and are not exported to the app. Sessions use opaque random tokens; only token digests are stored in PostgreSQL. There is no signing secret.
 
-Production requires a reachable PostgreSQL database with the schema applied. It never falls back to development JSON storage. PostgreSQL is local-only; do not publish ports 3000 or 5432. Development/tests use **3100**.
+Production, development and tests require a reachable PostgreSQL database with the schema applied. There is no JSON or Supabase backend. PostgreSQL is local-only; do not publish ports 3000 or 5432. Development/tests use **3100**.
 
 ```bash
 sudo systemctl status dnd-battle-room caddy postgresql
@@ -77,7 +77,7 @@ sudo sh -c 'runuser -u postgres -- pg_restore --no-owner --role=YOUR_DB_USER --d
 sudo systemctl start dnd-battle-room
 ```
 
-Do not restore blindly over existing tables; validate restoration on a separate server first. Saved DM accounts and room listings live in PostgreSQL. The existing live tabletop state is held in memory; this release does not add durable encounter-state storage, and a restart can lose the active encounter state.
+Do not restore blindly over existing tables; validate restoration on a separate server first. Accounts, sessions, room listings, library presets and complete encounters live in PostgreSQL. Maps, tokens, drawings, effects, initiative and dice history survive app restarts. Private data is included in database backups; protect backups like credentials.
 
 ## Manual updates
 
@@ -85,33 +85,57 @@ There are no unattended updates. Read the target release notes, take backups, an
 
 Only after verification, stop the app, replace its source/build with the staged release owned by `dnd-battle-room`, apply any documented schema migration with the protected configuration loader, and restart it. Keep the old source/build and a matching database backup for rollback. Recheck `/api/health`, login and a two-browser room. Never use the fresh-install script as an upgrade/migration command.
 
-## Development
+## Playing and permissions
+
+DM signup remains public. Passwords must contain 12–128 characters; spaces and passphrases are allowed. Accounts are stored on the server and work across devices. Players join using a room code and name; an HTTP-only guest session establishes identity. Display names never grant DM access or recover someone else's tokens.
+
+Players create, edit, move and delete their own tokens, roll dice and submit their own initiative. The room owner controls map/build tools, combat progression and token reassignment. A DM in someone else's room joins as a player. If a guest loses their browser data or changes devices, the DM selects their token and uses **Token owner** to assign it to the new guest.
+
+Private rolls are sent only to the roller and room DM. DM token notes stay private after reassignment. DM-controlled HP is hidden from players; reassigned HP is visible to the new owner and DM. Player character notes and ordinary player-token HP are shared. Library presets are shared between DMs; the server permits edits only by their creator. Preset notes are shared library content, so do not put encounter secrets in presets.
+
+Every final change commits to PostgreSQL before acknowledgment. Lost connections and failed saves show an error, pause editing and revert uncommitted changes. Reconnecting loads the saved encounter; there is no offline save mode. HTTP synchronization is available if WebSockets disconnect while the server/database remain reachable.
+
+## Development and tests
+
+Install Node.js 24 and PostgreSQL 16 (Ubuntu 24.04's default). Create a development role/database using PostgreSQL's interactive tools. Never reuse production credentials for development:
 
 ```bash
+sudo -u postgres createuser --pwprompt dnd_dev
+sudo -u postgres createdb --owner=dnd_dev dnd_development
 npm ci
+cp .env.example .env.local
+# Edit DATABASE_URL, APP_URL=http://127.0.0.1:3100 and other settings.
+npm run db:apply
 npm run dev -- --hostname 127.0.0.1 --port 3100
+```
+
+URL-encode special characters in the database username/password when manually assembling `DATABASE_URL`. The installer does this automatically. The database role needs schema/table creation permissions in its own database; it does not need PostgreSQL superuser privileges.
+
+Create a **separate disposable test database**, owned by a test-only role. Export `TEST_DATABASE_URL` explicitly in the test shell; the database name must contain `test`. Playwright ignores development database settings and refuses to run without this URL. Example (replace the password locally):
+
+```bash
+export TEST_DATABASE_URL='postgresql://dnd_test:REPLACE_PASSWORD@127.0.0.1:5432/dnd_test'
+DATABASE_URL="$TEST_DATABASE_URL" node scripts/apply-db-schema.mjs
 npm run typecheck
 npm run test:e2e
 npm run build
+npm run test:security
+RUN_TRANSPORT_TESTS=1 node --test tests/security/transport.test.mjs
 ```
 
-Without database configuration, development uses ignored `.data/dm-backend.json`. For PostgreSQL development copy `.env.example` to `.env.local`, fill the database URL, and apply the schema:
+PowerShell uses `$env:TEST_DATABASE_URL = '...'` and `$env:DATABASE_URL = $env:TEST_DATABASE_URL` instead of Bash exports. Browser tests use port **3100**; production transport tests use **3101** after a production build. Never use production port 3000 or live data. Tests create synthetic records in the test database. Production transport tests simulate a database outage using the test database owner: they temporarily disable connections, terminate test-database clients and restore access. Run them without other test/development sessions using that database. The optional provisioning test below also requires a test-only PostgreSQL administrator allowed to create/drop its randomly named test roles and databases:
 
 ```bash
-node --env-file=.env.local scripts/apply-db-schema.mjs
-```
-
-The installer uses `scripts/bootstrap-dm.mjs` to create the first account directly in PostgreSQL using the same username validation and scrypt hashing as normal signup. It reads NUL-separated username, password, display-name fields from stdin; do not put passwords in command arguments or shell history.
-
-Additional checks:
-
-```bash
+node --test tests/postgres/*.test.mjs
 npm run test:installer
 python3 tests/installer/config.test.py
 python3 scripts/audit-release.py
 bash -n install.sh
 bash -n scripts/install-production.sh
 shellcheck install.sh scripts/install-production.sh
+npm audit --omit=dev --audit-level=high
 ```
 
-Supabase remains an optional compatibility backend and is not installed by this script. See [the project rulebook](docs/PROJECT_RULEBOOK.md) for durable development rules.
+The installer runs `scripts/bootstrap-dm.mjs` to create the first account with the same username validation and asynchronous scrypt hashing as signup. It reads NUL-separated username, password and display name from stdin; never put passwords in arguments or shell history. Retries preserve the existing account.
+
+See [the project rulebook](docs/PROJECT_RULEBOOK.md), [security review and fixes](docs/SECURITY_REVIEW-2026-10-23.md) and [release acceptance](docs/RELEASE-v1.0.0.md). No deployment migration is included: this release targets a fresh installation. Existing local data files are left untouched.

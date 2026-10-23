@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { addRecentRoom, getGuestProfile, saveGuestProfile } from "../../../lib/storage";
+import { getGuestProfile, saveGuestProfile } from "../../../lib/storage";
 import { prepareTokenImage } from "../../../lib/tokenImages";
 
 export default function PlayerProfilePage() {
@@ -22,8 +22,8 @@ export default function PlayerProfilePage() {
     setAvatarUrl(profile.avatarUrl ?? "");
     setAvatarName(profile.avatarName ?? "");
 
-    fetch(`/api/rooms/${roomCode}`)
-      .then((response) => setRoomStatus(response.ok ? "open" : "missing"))
+    fetch(`/api/rooms/${roomCode}/status`)
+      .then(async response => setRoomStatus(response.ok && (await response.json()).exists ? "open" : "missing"))
       .catch(() => setRoomStatus("missing"));
   }, [roomCode]);
 
@@ -39,20 +39,18 @@ export default function PlayerProfilePage() {
     }
   }
 
-  function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (roomStatus !== "open") {
       setError("That room is not open yet. Ask the DM to open the room first.");
       return;
     }
-    const current = getGuestProfile();
-    saveGuestProfile({
-      ...current,
-      nickname: nickname.trim() || "Adventurer",
-      avatarUrl: avatarUrl || undefined,
-      avatarName: avatarName || undefined
-    });
-    addRecentRoom(roomCode);
+    try {
+      const response = await fetch(`/api/rooms/${roomCode}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nickname:nickname.trim()||'Adventurer',avatarUrl:avatarUrl||undefined,avatarName:avatarName||undefined})});
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error||'Could not join room.');
+      saveGuestProfile(data.profile);
+    } catch(error) { setError(error instanceof Error?error.message:'Could not join room.'); return; }
     router.push(`/room/${roomCode}`);
   }
 

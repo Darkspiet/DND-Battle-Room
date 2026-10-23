@@ -2,17 +2,15 @@
 
 import Link from "next/link";
 import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
-import { rollDice } from "../lib/dice";
 import { loadLibraryItems } from "../lib/dmData";
-import { createEntityId, getGuestProfile, loadRoom, saveGuestProfile, saveRoom } from "../lib/storage";
-import { hasSupabaseConfig, joinSupabaseRoom, saveSupabaseRoom, subscribeToSupabaseRoom } from "../lib/supabaseRoom";
+import { createEntityId, getGuestProfile, saveGuestProfile } from "../lib/storage";
+import { deriveCommands, type RoomCommand } from "../lib/roomCommands";
 import { prepareBattleMapImage, prepareTokenImage } from "../lib/tokenImages";
 import type {
   AreaEffectShape,
   AreaEffectTemplate,
   BattleMapBackground,
   CombatPhase,
-  DiceRoll,
   DrawingLine,
   GuestProfile,
   InitiativeEntry,
@@ -120,10 +118,6 @@ function sortInitiativeEntries(entries: InitiativeEntry[]) {
   return [...entries].sort((a, b) => b.total - a.total || b.dexModifier - a.dexModifier || a.createdAt - b.createdAt);
 }
 
-function rollD20() {
-  return Math.floor(Math.random() * 20) + 1;
-}
-
 function splitConditions(input: string) {
   return input
     .split(",")
@@ -224,10 +218,15 @@ export function Tabletop({ roomCode }: Props) {
   });
   const [imageError, setImageError] = useState("");
   const [backgroundError, setBackgroundError] = useState("");
-  const [syncMode, setSyncMode] = useState<"connecting" | "supabase" | "websocket" | "server" | "local">("connecting");
+  const [syncMode, setSyncMode] = useState<"connecting" | "websocket" | "server">("connecting");
   const [syncError, setSyncError] = useState("");
   const boardRef = useRef<HTMLDivElement | null>(null);
-  const channelRef = useRef<BroadcastChannel | null>(null);
+  const roomRef = useRef<RoomState | null>(null);
+  const authoritativeRef = useRef<RoomState | null>(null);
+  const actorRef = useRef<GuestProfile | null>(null);
+  const readyRef = useRef(false);
+  const jobsRef = useRef<Array<{id:string;commands:RoomCommand[]}>>([]);
+  const busyRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const buildUndoRef = useRef<BuildUndo[]>([]);
   const tokenMoveSeqRef = useRef(0);
@@ -238,162 +237,60 @@ export function Tabletop({ roomCode }: Props) {
     pending: null
   });
 
-  function syncProfileFromRoom(nextRoom: RoomState, fallbackProfile: GuestProfile) {
-    const assignedMember = nextRoom.members.find((member) => member.id === fallbackProfile.id);
-    const nextProfile = assignedMember
-      ? {
-          id: assignedMember.id,
-          nickname: assignedMember.nickname,
-          color: assignedMember.color,
-          avatarUrl: assignedMember.avatarUrl,
-          avatarName: assignedMember.avatarName
-        }
-      : fallbackProfile;
-    setProfile(nextProfile);
-    saveGuestProfile(nextProfile);
+  function acceptSnapshot(next: RoomState) {
+    if(authoritativeRef.current && next.revision < authoritativeRef.current.revision) return;
+    const normalized=normalizeRoomState(next);
+    authoritativeRef.current=normalized;
+    if(!busyRef.current && !jobsRef.current.length) { roomRef.current=normalized;setRoom(normalized); }
   }
-
+  function pause(message: string) {
+    readyRef.current=false;setSyncMode("connecting");setSyncError(message);
+    jobsRef.current=[];
+    if(authoritativeRef.current){roomRef.current=authoritativeRef.current;setRoom(authoritativeRef.current);}
+    const preview=tokenPreviewThrottleRef.current;
+    if(preview.timer!==null)window.clearTimeout(preview.timer);
+    preview.pending=null;preview.timer=null;
+  }
   useEffect(() => {
-    let cancelled = false;
-    const loadedProfile = getGuestProfile();
-    const localRoom = normalizeRoomState(loadRoom(roomCode, loadedProfile));
-    syncProfileFromRoom(localRoom, loadedProfile);
-    setRoom(localRoom);
-
-    function joinServerFallback() {
-      fetch(roomApiPath(roomCode), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(loadedProfile)
-      })
-        .then((response) => {
-          if (!response.ok) throw new Error("Server room join failed");
-          return response.json() as Promise<RoomState>;
-        })
-        .then((serverRoom) => {
-          if (cancelled) return;
-          setSyncMode("server");
-          setSyncError("");
-          const normalized = normalizeRoomState(serverRoom);
-          setRoom(normalized);
-          syncProfileFromRoom(normalized, loadedProfile);
-          saveRoom(normalized);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setSyncError("Development server sync is unavailable. Using local browser storage.");
-          setSyncMode("local");
-        });
+    let cancelled=false;
+    let reconnect: ReturnType<typeof setTimeout> | undefined;
+    async function refresh() {
+      try {
+        const response=await fetch(roomApiPath(roomCode),{cache:'no-store'});const data=await response.json();
+        if(!response.ok)throw new Error(data.error||'Room unavailable.');
+        if(cancelled)return;acceptSnapshot(data);readyRef.current=true;
+        setSyncMode(wsRef.current?.readyState===WebSocket.OPEN?'websocket':'server');setSyncError('');
+      } catch(error) { if(!cancelled)pause(error instanceof Error?error.message:'Connection lost. Editing is paused.'); }
     }
-
-    if (hasSupabaseConfig()) {
-      joinSupabaseRoom(roomCode, loadedProfile)
-        .then((supabaseRoom) => {
-          if (cancelled) return;
-          if (!supabaseRoom) throw new Error("Supabase is not configured.");
-          setSyncMode("supabase");
-          setSyncError("");
-          const normalized = normalizeRoomState(supabaseRoom);
-          setRoom(normalized);
-          syncProfileFromRoom(normalized, loadedProfile);
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          setSyncError(error instanceof Error ? error.message : "Supabase sync failed.");
-          setSyncMode("local");
-        });
-      return () => {
-        cancelled = true;
+    function connect() {
+      if(cancelled)return;
+      const socket=new WebSocket(roomWebSocketUrl());wsRef.current=socket;
+      socket.onopen=()=>socket.send(JSON.stringify({type:'join_room',roomCode}));
+      socket.onmessage=event=>{
+        if(cancelled)return;
+        try {
+          const message=JSON.parse(event.data) as RealtimeMessage & {status?:number};
+          if(message.type==='room_snapshot'){acceptSnapshot(message.room);readyRef.current=true;setSyncMode('websocket');setSyncError('');}
+          else if(message.type==='token_move_preview'){
+            if(!busyRef.current && !jobsRef.current.length) applyLocalTokenMove({tokenId:message.token.id,x:message.token.x,y:message.token.y,seq:message.seq});
+          } else if(message.type==='sync_error' && message.status!==429) pause(message.message);
+        }catch{pause('Invalid server response. Editing is paused.');}
       };
+      socket.onerror=()=>socket.close();
+      socket.onclose=()=>{if(cancelled)return;wsRef.current=null;pause('Connection lost. Checking saved state...');void refresh();reconnect=setTimeout(connect,2000);};
     }
-
-    const socket = new WebSocket(roomWebSocketUrl());
-    wsRef.current = socket;
-    let opened = false;
-
-    socket.addEventListener("open", () => {
-      opened = true;
-      socket.send(JSON.stringify({ type: "join_room", roomCode, profile: loadedProfile }));
-    });
-
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data) as RealtimeMessage;
-      if (message.type === "room_snapshot") {
-        const normalized = normalizeRoomState(message.room);
-        setSyncMode("websocket");
-        setSyncError("");
-        setRoom(normalized);
-        syncProfileFromRoom(normalized, loadedProfile);
-        saveRoom(normalized);
-        return;
-      }
-      if (message.type === "token_move_preview" || message.type === "token_move_commit") {
-        const previousSeq = tokenSequenceRef.current[message.token.id] ?? 0;
-        if (message.seq < previousSeq) return;
-        tokenSequenceRef.current = { ...tokenSequenceRef.current, [message.token.id]: message.seq };
-        setRoom((current) =>
-          current
-            ? {
-                ...current,
-                tokens: current.tokens.map((token) => (token.id === message.token.id ? { ...token, ...message.token } : token))
-              }
-            : current
-        );
-        return;
-      }
-      if (message.type === "sync_error") {
-        setSyncError(message.message);
-      }
-    });
-
-    socket.addEventListener("close", () => {
-      if (cancelled) return;
-      wsRef.current = null;
-      setSyncError(opened ? "Realtime connection dropped. Falling back to server polling." : "Realtime server unavailable. Falling back to server polling.");
-      joinServerFallback();
-    });
-
-    socket.addEventListener("error", () => {
-      socket.close();
-    });
-
-    return () => {
-      cancelled = true;
-      socket.close();
-    };
+    async function open() {
+      try {
+        const preferences=getGuestProfile();
+        const response=await fetch(roomApiPath(roomCode),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nickname:preferences.nickname,color:preferences.color,avatarUrl:preferences.avatarUrl,avatarName:preferences.avatarName})});
+        const data=await response.json();if(!response.ok)throw new Error(data.error||'Could not join room.');
+        if(cancelled)return;actorRef.current=data.profile;setProfile(data.profile);saveGuestProfile(data.profile);acceptSnapshot(data.room);readyRef.current=true;setSyncMode('server');connect();
+      }catch(error){if(!cancelled)pause(error instanceof Error?error.message:'Could not open room.');}
+    }
+    void open();
+    const poll=setInterval(()=>{if(actorRef.current)void refresh();},2000);
+    return ()=>{cancelled=true;readyRef.current=false;clearInterval(poll);if(reconnect)clearTimeout(reconnect);wsRef.current?.close();jobsRef.current=[];};
   }, [roomCode]);
-
-  useEffect(() => {
-    if (!profile || syncMode !== "supabase") return;
-    const unsubscribe = subscribeToSupabaseRoom(roomCode, (supabaseRoom) => {
-      const normalized = normalizeRoomState(supabaseRoom);
-      setRoom(normalized);
-      saveRoom(normalized);
-    });
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, [profile, roomCode, syncMode]);
-
-  useEffect(() => {
-    if (!profile || syncMode !== "server") return;
-    const interval = window.setInterval(() => {
-      fetch(roomApiPath(roomCode))
-        .then((response) => {
-          if (!response.ok) throw new Error("Server room fetch failed");
-          return response.json() as Promise<RoomState>;
-        })
-        .then((serverRoom) => {
-          const normalized = normalizeRoomState(serverRoom);
-          setRoom(normalized);
-          saveRoom(normalized);
-        })
-        .catch(() => setSyncMode("local"));
-    }, 1200);
-
-    return () => window.clearInterval(interval);
-  }, [profile, roomCode, syncMode]);
 
   useEffect(() => {
     loadLibraryItems().then(setLibraryItems).catch(() => setLibraryItems([]));
@@ -421,7 +318,6 @@ export function Tabletop({ roomCode }: Props) {
   const initiativePromptEntry = isDm ? pendingCombatEntries[0] ?? null : ownCombatEntries.find((entry) => !entry.submitted) ?? null;
   const hasInitiativeOverlay = combatPhase === "initiative";
   const submittedInitiativeCount = combatEntries.filter((entry) => entry.submitted).length;
-  const nextEntry = combatPhase === "active" && combatEntries.length ? combatEntries[(combat?.currentTurnIndex ?? 0) + 1] ?? combatEntries[0] : null;
   const hasLibraryTools = isDm && roomMode === "library";
   const filteredLibraryItems = useMemo(() => {
     const query = librarySearch.trim().toLowerCase();
@@ -432,25 +328,6 @@ export function Tabletop({ roomCode }: Props) {
         return `${item.name} ${item.category} ${item.tokenType}`.toLowerCase().includes(query);
       });
   }, [libraryItems, libraryKind, librarySearch]);
-
-  useEffect(() => {
-    const channel = new BroadcastChannel(`dnd-room-${roomCode}`);
-    channelRef.current = channel;
-    channel.onmessage = (event: MessageEvent<RoomState>) => {
-      if (syncMode === "websocket") return;
-      setRoom(normalizeRoomState(event.data));
-    };
-    return () => channel.close();
-  }, [roomCode, syncMode]);
-
-  useEffect(() => {
-    if (!room) return;
-    if (syncMode === "websocket") {
-      const timeout = window.setTimeout(() => saveRoom(room), 500);
-      return () => window.clearTimeout(timeout);
-    }
-    saveRoom(room);
-  }, [room, syncMode]);
 
   useEffect(() => {
     if (!buildMode || !isDm) return;
@@ -469,49 +346,40 @@ export function Tabletop({ roomCode }: Props) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [buildMode, isDm]);
 
-  function persistRoom(next: RoomState) {
-    saveRoom(next);
-    if (syncMode !== "websocket") {
-      channelRef.current?.postMessage(next);
-    }
-    if (syncMode === "websocket") {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: "room_patch", roomCode, room: next, tokenSequences: tokenSequenceRef.current }));
+  async function pumpCommands() {
+    if(busyRef.current)return;
+    busyRef.current=true;
+    try {
+      while(jobsRef.current.length && readyRef.current) {
+        const job=jobsRef.current.shift()!;
+        const response=await fetch(`${roomApiPath(roomCode)}/commands`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...job,revision:authoritativeRef.current?.revision})});
+        const data=await response.json();
+        if(!response.ok)throw new Error(data.error||'Changes were not saved.');
+        acceptSnapshot(data.room);
       }
-      return;
-    }
-    if (syncMode === "server") {
-      fetch(roomApiPath(roomCode), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next)
-      }).catch(() => setSyncMode("local"));
-    }
-    if (syncMode === "supabase") {
-      saveSupabaseRoom(next).catch((error) => {
-        setSyncError(error instanceof Error ? error.message : "Supabase save failed.");
-        setSyncMode("local");
-      });
+    }catch(error){jobsRef.current=[];pause(error instanceof Error?error.message:'Save failed. Editing is paused.');}
+    finally {
+      busyRef.current=false;
+      if(authoritativeRef.current){roomRef.current=authoritativeRef.current;setRoom(authoritativeRef.current);}
     }
   }
-
-  function updateRoom(updater: (current: RoomState) => RoomState) {
-    setRoom((current) => {
-      if (!current) return current;
-      const next = updater(current);
-      persistRoom(next);
-      return next;
-    });
+  function sendCommands(commands:RoomCommand[],optimistic?:RoomState) {
+    if(!readyRef.current || !commands.length)return;
+    if(optimistic){roomRef.current=optimistic;setRoom(optimistic);}
+    jobsRef.current.push({id:crypto.randomUUID(),commands});
+    void pumpCommands();
   }
-
-  function updateBuildRoom(updater: (current: RoomState) => RoomState, createUndo: (current: RoomState, next: RoomState) => BuildUndo) {
-    setRoom((current) => {
-      if (!current) return current;
-      const next = updater(current);
-      pushBuildUndo(createUndo(current, next));
-      persistRoom(next);
-      return next;
-    });
+  function updateRoom(updater:(current:RoomState)=>RoomState) {
+    const current=roomRef.current;
+    if(!current||!readyRef.current)return;
+    const next=updater(current);
+    sendCommands(deriveCommands(current,next,current.dmId===actorRef.current?.id),next);
+  }
+  function updateBuildRoom(updater:(current:RoomState)=>RoomState,createUndo:(current:RoomState,next:RoomState)=>BuildUndo) {
+    const current=roomRef.current;
+    if(!current||!readyRef.current)return;
+    const next=updater(current);pushBuildUndo(createUndo(current,next));
+    sendCommands(deriveCommands(current,next,current.dmId===actorRef.current?.id),next);
   }
 
   function pushBuildUndo(undo: BuildUndo) {
@@ -878,20 +746,15 @@ export function Tabletop({ roomCode }: Props) {
     return tokenMoveSeqRef.current;
   }
 
-  function applyLocalTokenMove(payload: TokenMovePayload) {
-    setRoom((current) =>
-      current
-        ? {
-            ...current,
-            tokens: current.tokens.map((item) => (item.id === payload.tokenId ? { ...item, x: payload.x, y: payload.y } : item))
-          }
-        : current
-    );
+  function applyLocalTokenMove(payload:TokenMovePayload) {
+    const current=roomRef.current;if(!current)return;
+    const next={...current,tokens:current.tokens.map(item=>item.id===payload.tokenId?{...item,x:payload.x,y:payload.y}:item)};
+    roomRef.current=next;setRoom(next);
   }
-
-  function sendTokenMove(type: "token_move_preview" | "token_move_commit", payload: TokenMovePayload) {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type, roomCode, ...payload }));
+  function sendTokenMove(type:"token_move_preview"|"token_move_commit",payload:TokenMovePayload) {
+    if(!readyRef.current)return;
+    if(type==='token_move_commit')sendCommands([{type:'token.update',payload:{id:payload.tokenId,patch:{x:payload.x,y:payload.y}}}]);
+    else if(wsRef.current?.readyState===WebSocket.OPEN)wsRef.current.send(JSON.stringify({type,roomCode,...payload}));
   }
 
   function queueTokenMovePreview(payload: TokenMovePayload) {
@@ -926,7 +789,7 @@ export function Tabletop({ roomCode }: Props) {
   }
 
   function startBuildGesture(event: PointerEvent<HTMLDivElement>) {
-    if (!profile || !room) return;
+    if (!profile || !room || !readyRef.current) return;
     setSelectedBuildObject(null);
     if (!buildMode || !isDm || buildTool === "background") return;
     const point = getBoardPoint(event);
@@ -1025,24 +888,7 @@ export function Tabletop({ roomCode }: Props) {
   }
 
   function doRoll(expression = diceExpression) {
-    if (!profile) return;
-    try {
-      const result = rollDice(expression);
-      const roll: DiceRoll = {
-        id: createEntityId("roll"),
-        userId: profile.id,
-        userName: profile.nickname,
-        expression: result.expression,
-        total: result.total,
-        parts: result.parts,
-        private: privateRoll,
-        createdAt: Date.now()
-      };
-      setDiceError("");
-      updateRoom((current) => ({ ...current, rolls: [roll, ...current.rolls].slice(0, 80) }));
-    } catch (error) {
-      setDiceError(error instanceof Error ? error.message : "Invalid roll.");
-    }
+    setDiceError('');sendCommands([{type:'dice.roll',payload:{expression,private:privateRoll}}]);
   }
 
   function visibleRolls() {
@@ -1167,36 +1013,8 @@ export function Tabletop({ roomCode }: Props) {
     }));
   }
 
-  function submitInitiative(entryId: string, source: "app" | "manual" | "dm", manualTotal?: number) {
-    updateRoom((current) => {
-      const entries = current.combat.entries.map((entry) => {
-        if (entry.id !== entryId) return entry;
-        const isManualTotal = manualTotal !== undefined;
-        const mode: InitiativeRollMode = isManualTotal ? "manual" : entry.mode === "manual" ? "normal" : entry.mode;
-        const first = rollD20();
-        const second = mode === "normal" ? first : rollD20();
-        const roll = isManualTotal ? manualTotal : mode === "advantage" ? Math.max(first, second) : mode === "disadvantage" ? Math.min(first, second) : first;
-        const total = isManualTotal ? manualTotal : roll + entry.dexModifier;
-        return {
-          ...entry,
-          mode,
-          roll,
-          total,
-          submitted: true,
-          submittedAt: Date.now(),
-          submittedBy: profile?.id,
-          source
-        };
-      });
-      return {
-        ...current,
-        combat: {
-          ...current.combat,
-          currentTurnIndex: 0,
-          entries: current.combat.phase === "active" ? sortInitiativeEntries(entries) : entries
-        }
-      };
-    });
+  function submitInitiative(entryId:string,_source:"app"|"manual"|"dm",manualTotal?:number) {
+    sendCommands([{type:'initiative.submit',payload:{id:entryId,...(manualTotal===undefined?{}:{manualTotal})}}]);
   }
 
   function rollInitiative(entryId: string) {
@@ -1312,14 +1130,14 @@ export function Tabletop({ roomCode }: Props) {
         <section className="loading-panel">
           <span className="product-kicker">Opening room</span>
           <h1>Loading tabletop...</h1>
-          <p>Preparing your profile, room state, map grid, and sync connection.</p>
+          <p>{syncError || "Preparing your profile, room state, map grid, and sync connection."}</p>
         </section>
       </main>
     );
   }
 
   return (
-    <main className="app-shell table-shell">
+    <main className="app-shell table-shell" data-paused={syncMode === "connecting"}>
       <header className="app-topbar room-header">
         <div>
           <Link href="../.." className="back-link">
@@ -1349,16 +1167,8 @@ export function Tabletop({ roomCode }: Props) {
               </button>
             </nav>
           ) : null}
-          <span className={syncMode === "server" || syncMode === "supabase" || syncMode === "websocket" ? "sync-badge online" : "sync-badge"}>
-            {syncMode === "supabase"
-              ? "Supabase realtime"
-              : syncMode === "websocket"
-                ? "Realtime sync"
-                : syncMode === "server"
-                  ? "Dev server sync"
-                  : syncMode === "local"
-                    ? "Local only"
-                    : "Connecting"}
+          <span className={syncMode === "server" || syncMode === "websocket" ? "sync-badge online" : "sync-badge"}>
+            {syncMode === "websocket" ? "Realtime sync" : syncMode === "server" ? "Server sync" : "Editing paused"}
           </span>
           <button
             className="secondary-action"
@@ -1805,7 +1615,7 @@ export function Tabletop({ roomCode }: Props) {
                   />
                 </label>
               </div>
-              <label>
+              {(isDm || selectedToken.ownerId === profile.id || selectedToken.hp !== undefined) ? <label>
                 HP / status
                 <input
                   disabled={!canControl(selectedToken)}
@@ -1813,7 +1623,7 @@ export function Tabletop({ roomCode }: Props) {
                   value={selectedToken.hp ?? ""}
                   onChange={(event) => updateToken(selectedToken.id, { hp: event.target.value })}
                 />
-              </label>
+              </label> : null}
               <label>
                 Note
                 <input
@@ -1851,6 +1661,13 @@ export function Tabletop({ roomCode }: Props) {
               ) : (
                 <p className="empty-state">No custom picture. The chip is using its icon.</p>
               )}
+              {isDm ? (
+                <label>Token owner
+                  <select aria-label="Token owner" value={selectedToken.ownerId} onChange={event=>sendCommands([{type:'token.assign',payload:{id:selectedToken.id,ownerId:event.target.value}}])}>
+                    {room.members.map(member=><option key={member.id} value={member.id}>{member.nickname}{member.role==='dm'?' (DM)':''}</option>)}
+                  </select>
+                </label>
+              ) : null}
               {canControl(selectedToken) ? (
                 <button className="secondary-action compact danger" onClick={() => deleteToken(selectedToken.id)} type="button">
                   Delete selected

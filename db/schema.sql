@@ -65,3 +65,29 @@ create index if not exists public_library_items_created_by_idx
 
 create index if not exists room_snapshots_updated_idx
   on room_snapshots (updated_at desc);
+
+
+alter table room_snapshots add column if not exists revision bigint not null default 0;
+create table if not exists guest_profiles (
+  id text primary key,
+  display_name text not null,
+  color text not null,
+  avatar_url text,
+  avatar_name text,
+  created_at timestamptz not null default now()
+);
+create table if not exists guest_sessions (
+  token_hash text primary key,
+  profile_id text not null references guest_profiles(id) on delete cascade,
+  expires_at timestamptz not null
+);
+create index if not exists guest_sessions_expires_idx on guest_sessions(expires_at);
+create index if not exists dm_sessions_expires_idx on dm_sessions(expires_at);
+create table if not exists room_commands (
+  room_code text not null references room_snapshots(room_code) on delete cascade,
+  actor_id text not null,
+  command_id text not null,
+  created_at timestamptz not null default now(),
+  primary key(room_code, actor_id, command_id)
+);
+create index if not exists room_commands_created_idx on room_commands(created_at);

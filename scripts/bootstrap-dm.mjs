@@ -16,7 +16,7 @@ export async function bootstrapDM(pool, { username, password, name }) {
       await client.query('rollback');
       return false;
     }
-    const credential = hashPassword(password);
+    const credential = await hashPassword(password);
     await client.query(`insert into dm_profiles (id, username, display_name, color, password_hash, password_salt)
       values ($1, $2, $3, $4, $5, $6)`,
     [`dm_${randomBytes(8).toString('hex')}`, username, name.trim() || username, '#b7394b', credential.hash, credential.salt]);

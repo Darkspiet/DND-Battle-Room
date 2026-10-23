@@ -1,22 +1,4 @@
-import { cookies } from "next/headers";
-import { NextRequest, NextResponse } from "next/server";
-import { getLocalDMBySession, loadServerDMRooms, saveServerDMRoom } from "../../../../lib/dmServerStore";
-import type { DMRoomSummary } from "../../../../lib/types";
-
-const SESSION_COOKIE = "dnd-dm-session";
-
-export async function GET() {
-  const user = await getLocalDMBySession((await cookies()).get(SESSION_COOKIE)?.value);
-  if (!user) return NextResponse.json({ error: "Sign in as DM first." }, { status: 401 });
-  return NextResponse.json({ rooms: await loadServerDMRooms(user.id) });
-}
-
-export async function POST(request: NextRequest) {
-  const user = await getLocalDMBySession((await cookies()).get(SESSION_COOKIE)?.value);
-  if (!user) return NextResponse.json({ error: "Sign in as DM first." }, { status: 401 });
-  const room = (await request.json()) as DMRoomSummary;
-  if (room.dmUserId !== user.id) {
-    return NextResponse.json({ error: "Room owner does not match the signed-in DM." }, { status: 403 });
-  }
-  return NextResponse.json({ room: await saveServerDMRoom(room) });
-}
+import { listRooms, saveRoomMetadata } from '../../../../lib/backend.mjs';
+import { respond, guard, readJSON } from '../../../../lib/http';
+export async function GET(request: Request) { return respond(async () => { guard(request); return { rooms: await listRooms(request.headers.get('cookie')) }; }); }
+export async function POST(request: Request) { return respond(async () => { guard(request); return { room: await saveRoomMetadata(request.headers.get('cookie'), await readJSON(request)) }; }); }

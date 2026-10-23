@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   createLibraryItem,
-  createRoomCode,
   getCurrentDMUser,
   loadDMRooms,
   loadLibraryItems,
@@ -29,6 +28,7 @@ export default function DMDashboardPage() {
   const [roomName, setRoomName] = useState("Friday Encounter");
   const [libraryKind, setLibraryKind] = useState<LibraryItemKind>("token");
   const [librarySearch, setLibrarySearch] = useState("");
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [profileDraft, setProfileDraft] = useState({ name: "", color: "#b7394b", avatarUrl: "", avatarName: "" });
   const [draft, setDraft] = useState({
     name: "Goblin Scout",
@@ -56,8 +56,8 @@ export default function DMDashboardPage() {
       Promise.all([loadDMRooms(user.id), loadLibraryItems()]).then(([loadedRooms, loadedLibrary]) => {
         setRooms(loadedRooms);
         setLibrary(loadedLibrary);
-      });
-    });
+      }).catch(error=>setError(error.message));
+    }).catch(error=>setError(error.message));
   }, [router]);
 
   const filteredLibrary = useMemo(() => {
@@ -73,16 +73,9 @@ export default function DMDashboardPage() {
   async function createRoom(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!dm) return;
-    const now = Date.now();
-    const room: DMRoomSummary = {
-      id: `room_${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`,
-      roomCode: createRoomCode(),
-      name: roomName.trim() || "Untitled Room",
-      dmUserId: dm.id,
-      createdAt: now,
-      updatedAt: now
-    };
-    const saved = await saveDMRoom(room);
+    let saved: DMRoomSummary;
+    try { saved = await saveDMRoom({ name: roomName.trim() || "Untitled Room" }); }
+    catch (error) { setError(error instanceof Error ? error.message : "Could not create room."); return; }
     setRooms((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
     saveGuestProfile({ id: dm.id, nickname: dm.name, color: dm.color, avatarUrl: dm.avatarUrl, avatarName: dm.avatarName });
     router.push(`/room/${saved.roomCode}`);
@@ -91,7 +84,8 @@ export default function DMDashboardPage() {
   async function renameRoom(room: DMRoomSummary, name: string) {
     const next = { ...room, name: name.trim() || "Untitled Room", updatedAt: Date.now() };
     setRooms((current) => current.map((item) => (item.id === room.id ? next : item)));
-    await saveDMRoom(next);
+    try { const saved = await saveDMRoom({id:next.id,name:next.name}); setRooms(current=>current.map(item=>item.id===saved.id?saved:item)); }
+    catch(error) { setError(error instanceof Error?error.message:"Room rename failed."); setRooms(current=>current.map(item=>item.id===room.id?room:item)); }
   }
 
   async function handleLibraryImage(file: File | null) {
@@ -152,8 +146,11 @@ export default function DMDashboardPage() {
       note: draft.note,
       createdBy: dm.id
     });
-    const saved = await saveLibraryItem(item);
+    let saved: LibraryItem;
+    try { saved = await saveLibraryItem(editingPresetId ? {...item, id:editingPresetId} : item); }
+    catch(error) { setError(error instanceof Error?error.message:"Preset was not saved."); return; }
     setLibrary((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
+    setEditingPresetId(null);
     setStatus(`${saved.name} is now available in the shared library.`);
   }
 
@@ -236,6 +233,7 @@ export default function DMDashboardPage() {
                       Open
                     </Link>
                   </div>
+
                 </article>
               ))
             ) : (
@@ -345,8 +343,9 @@ export default function DMDashboardPage() {
               </div>
             ) : null}
             <button className="primary-action" type="submit">
-              Save shared {libraryKind}
+              {editingPresetId ? "Update preset" : `Save shared ${libraryKind}`}
             </button>
+            {editingPresetId ? <button className="secondary-action" type="button" onClick={()=>setEditingPresetId(null)}>Cancel editing</button> : null}
           </form>
           {status ? <p className="empty-state">{status}</p> : null}
           {error ? <p className="error-text">{error}</p> : null}
@@ -374,6 +373,11 @@ export default function DMDashboardPage() {
                       {item.category} · {item.tokenType} · size {item.size}
                     </small>
                   </div>
+                  {item.createdBy===dm.id ? <button className="secondary-action compact" type="button" aria-label={`Edit preset ${item.name}`} onClick={()=>{
+                    setEditingPresetId(item.id);setLibraryKind(item.kind);
+                    setDraft({name:item.name,category:item.category,icon:item.icon,tokenType:item.tokenType,size:item.size,hp:item.hp??'',note:item.note??'',imageUrl:item.imageUrl??'',imageName:item.imageName??''});
+                    document.querySelector('.library-command-card')?.scrollIntoView({behavior:'smooth'});
+                  }}>Edit</button> : null}
                 </article>
               ))
             ) : (

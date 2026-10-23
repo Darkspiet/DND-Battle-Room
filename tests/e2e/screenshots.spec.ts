@@ -1,19 +1,8 @@
+import { signInAsDm } from './auth';
 import { mkdirSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
 
-async function signInAsDm(page: Page) {
-  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-  const response = await page.request.post("/api/dm/signup", {
-    data: {
-      username: `shot-${suffix}`,
-      password: "testpass",
-      name: "Screenshot DM",
-      color: "#b7394b"
-    }
-  });
-  expect(response.ok()).toBeTruthy();
-}
 
 test.beforeAll(() => {
   mkdirSync("test-results/screenshots", { recursive: true });

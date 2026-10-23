@@ -19,10 +19,10 @@ test('real PostgreSQL provisioning, schema, first login credentials and retries'
   let app;
   try {
     const file = path.join(directory, 'config.json');
-    const values = ['The Dragon', 'battles.example.com', 'gamemaster', 'Game Master', database, role, password, 'a'.repeat(64)];
-    const made = spawnSync('python3', ['scripts/installer-config.py', 'create', file], { input: values.join('\0') + '\0', encoding: 'utf8' });
+    const values = ['The Dragon', 'battles.example.com', 'gamemaster', 'Game Master', database, role, password];
+    const made = spawnSync(process.env.PYTHON || 'python3', ['scripts/installer-config.py', 'create', file], { input: values.join('\0') + '\0', encoding: 'utf8' });
     assert.equal(made.status, 0, made.stderr);
-    const sql = spawnSync('python3', ['scripts/installer-config.py', 'sql', file], { encoding: 'utf8' });
+    const sql = spawnSync(process.env.PYTHON || 'python3', ['scripts/installer-config.py', 'sql', file], { encoding: 'utf8' });
     assert.equal(sql.status, 0, sql.stderr);
     await admin.query(sql.stdout);
     await admin.query(`CREATE DATABASE "${database}" OWNER "${role}"`);
@@ -39,8 +39,8 @@ test('real PostgreSQL provisioning, schema, first login credentials and retries'
     assert.equal(await bootstrapDM(app, dm), true);
     assert.equal(await bootstrapDM(app, { ...dm, password: 'different password' }), false);
     const row = (await app.query('select * from dm_profiles')).rows[0];
-    assert.equal(row.password_hash, hashPassword(password, row.password_salt).hash);
-    assert.notEqual(row.password_hash, hashPassword('different password', row.password_salt).hash);
+    assert.equal(row.password_hash, (await hashPassword(password, row.password_salt)).hash);
+    assert.notEqual(row.password_hash, (await hashPassword('different password', row.password_salt)).hash);
     assert.equal((await app.query('select count(*) from dm_sessions')).rows[0].count, '0');
   } finally {
     if (app) await app.end();

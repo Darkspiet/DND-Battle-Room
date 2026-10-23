@@ -1,19 +1,5 @@
-import { cookies } from "next/headers";
-import { NextResponse } from "next/server";
-import { clearLocalDMSession, getLocalDMBySession } from "../../../../lib/dmServerStore";
-
-const SESSION_COOKIE = "dnd-dm-session";
-
-export async function GET() {
-  const sessionToken = (await cookies()).get(SESSION_COOKIE)?.value;
-  const user = await getLocalDMBySession(sessionToken);
-  return NextResponse.json({ user });
-}
-
-export async function DELETE() {
-  const cookieStore = await cookies();
-  const sessionToken = cookieStore.get(SESSION_COOKIE)?.value;
-  await clearLocalDMSession(sessionToken);
-  cookieStore.delete(SESSION_COOKIE);
-  return NextResponse.json({ ok: true });
-}
+import { cookies } from 'next/headers';
+import { readActor, signOut } from '../../../../lib/backend.mjs';
+import { respond, guard } from '../../../../lib/http';
+export async function GET(request: Request) { return respond(async () => { guard(request); return { user: await readActor(request.headers.get('cookie'), true) }; }); }
+export async function DELETE(request: Request) { return respond(async () => { guard(request); await signOut(request.headers.get('cookie')); (await cookies()).delete('dnd-dm-session'); return { ok: true }; }); }

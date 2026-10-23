@@ -3,7 +3,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { hasSupabaseConfig } from "../../../lib/supabaseRoom";
 import { createDMAccount, getCurrentDMUser, signInDM } from "../../../lib/dmData";
 import { saveGuestProfile } from "../../../lib/storage";
 import { prepareTokenImage } from "../../../lib/tokenImages";
@@ -23,13 +22,8 @@ export default function DMLoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const hasSupabase = hasSupabaseConfig();
 
   useEffect(() => {
-    if (!hasSupabase) {
-      setLoading(false);
-      return;
-    }
     getCurrentDMUser().then((user) => {
       if (!user) {
         setLoading(false);
@@ -38,7 +32,7 @@ export default function DMLoginPage() {
       saveGuestProfile({ id: user.id, nickname: user.name, color: user.color, avatarUrl: user.avatarUrl, avatarName: user.avatarName });
       router.replace("/dm/dashboard");
     }).catch(() => setLoading(false));
-  }, [hasSupabase, router]);
+  }, [router]);
 
   async function handleAvatar(file: File | null) {
     if (!file) return;
@@ -63,10 +57,6 @@ export default function DMLoginPage() {
           ? await signInDM(username, password)
           : await createDMAccount({ username, password, name, color, avatarUrl: avatarUrl || undefined, avatarName: avatarName || undefined });
 
-      if (result.needsEmailConfirmation) {
-        setStatus("Confirm the generated DM account email in Supabase, then sign in with this username.");
-        return;
-      }
       if (!result.user) {
         setError("Could not open that DM profile.");
         return;
@@ -105,11 +95,9 @@ export default function DMLoginPage() {
           </div>
         </div>
 
-        {!hasSupabase ? (
-          <p className="sync-warning">
+        <p className="sync-warning">
             DM accounts are managed by this server. Sign in or create a DM profile to save your rooms.
-          </p>
-        ) : null}
+        </p>
 
         <div className="mode-tabs" aria-label="Auth mode">
           <button className={mode === "signin" ? "selected" : ""} onClick={() => setMode("signin")} type="button">
@@ -143,7 +131,8 @@ export default function DMLoginPage() {
             Password
             <input
               autoComplete={mode === "signin" ? "current-password" : "new-password"}
-              minLength={4}
+              minLength={mode === "signup" ? 12 : 1}
+              maxLength={128}
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -152,6 +141,7 @@ export default function DMLoginPage() {
           </label>
           {mode === "signup" ? (
             <>
+              <p className="empty-state">Use 12–128 characters. Spaces and passphrases are welcome.</p>
               <div>
                 <span className="field-label">Profile color</span>
                 <div className="color-picker" aria-label="Choose DM profile color">

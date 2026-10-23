@@ -1,18 +1,8 @@
+import { signInAsDm } from './auth';
 import { expect, test, type Page } from "@playwright/test";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 
-async function signInAsDm(page: Page) {
-  const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-  const response = await page.request.post("/api/dm/signup", {
-    data: {
-      username: `dm-${suffix}`,
-      password: "testpass",
-      name: "Test DM",
-      color: "#b7394b"
-    }
-  });
-  expect(response.ok()).toBeTruthy();
-}
 
 async function createRoom(page: Page) {
   await signInAsDm(page);
@@ -91,43 +81,36 @@ test("runs assisted initiative combat order", async ({ page }) => {
   await expect(page.locator(".map-toolbar")).toContainText("Round 2: Hero");
 });
 
-test("joins an existing room by code through player profile", async ({ page, request }) => {
-  await request.post("/api/rooms/JOIN01", {
-    data: {
-      id: "dm-join-test",
-      nickname: "Join Test DM",
-      color: "#b7394b"
-    }
-  });
-
-  await page.goto("/join");
-  await page.getByLabel("Room code").fill("JOIN01");
-  await page.getByRole("button", { name: "Join game" }).click();
-
-  await expect(page).toHaveURL(/\/join\/JOIN01$/);
-  await page.getByLabel("Player name").fill("Player One");
-  await page.getByRole("button", { name: "Enter lobby" }).click();
-
-  await expect(page).toHaveURL(/\/room\/JOIN01$/);
-  await expect(page.getByRole("heading", { name: "Room JOIN01" })).toBeVisible();
+test("joins an existing room by code through player profile", async ({ page, browser }) => {
+  await signInAsDm(page);
+  const created=await page.request.post('/api/dm/rooms',{data:{name:'Join Test Room'}});
+  const {room}=await created.json();
+  const guestContext=await browser.newContext();
+  try {
+    const guest=await guestContext.newPage();
+    await guest.goto('/join');
+    await guest.getByLabel('Room code').fill(room.roomCode);
+    await guest.getByRole('button',{name:'Join game'}).click();
+    await guest.getByLabel('Player name').fill('Player One');
+    await guest.getByRole('button',{name:'Enter lobby'}).click();
+    await expect(guest).toHaveURL(new RegExp(`/room/${room.roomCode}$`));
+    await expect(guest.getByRole('heading',{name:`Room ${room.roomCode}`})).toBeVisible();
+  } finally {await guestContext.close();}
 });
 
-test("assigns unique random colors to room members", async ({ request }) => {
-  const roomCode = `COLOR${Date.now().toString(36).slice(-5)}`.toUpperCase();
-
-  for (let index = 0; index < 8; index += 1) {
-    const response = await request.post(`/api/rooms/${roomCode}`, {
-      data: {
-        id: `guest-${index}`,
-        nickname: `Guest ${index}`,
-        color: "#ffffff"
-      }
-    });
-
-    expect(response.ok()).toBeTruthy();
-    const room = await response.json();
-    const colors = room.members.map((member: { color: string }) => member.color.toLowerCase());
-    expect(new Set(colors).size).toBe(colors.length);
+test("assigns unique random colors to room members", async ({ page, browser }) => {
+  await signInAsDm(page);
+  const created=await page.request.post('/api/dm/rooms',{data:{name:'Color Test'}});
+  const {room}=await created.json();
+  for(let index=0;index<8;index++){
+    const context=await browser.newContext();
+    try {
+      const response=await context.request.post(`/api/rooms/${room.roomCode}`,{data:{nickname:`Guest ${index}`,color:'#ffffff'}});
+      expect(response.ok()).toBeTruthy();
+      const data=await response.json();
+      const colors=data.room.members.map((member:{color:string})=>member.color.toLowerCase());
+      expect(new Set(colors).size).toBe(colors.length);
+    }finally{await context.close();}
   }
 });
 
@@ -242,7 +225,7 @@ test("sets battlefield backgrounds from upload and URL", async ({ page }) => {
   await buildPanel.getByLabel("Upload battlefield").setInputFiles(path.join(process.cwd(), "tests/fixtures/token-picture.png"));
   await expect(page.locator(".map-background-image")).toHaveCount(1);
 
-  const dataUrl = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Crect width='20' height='20' fill='green'/%3E%3C/svg%3E";
+  const dataUrl = "data:image/png;base64," + readFileSync(path.join(process.cwd(), "tests/fixtures/token-picture.png")).toString("base64");
   await buildPanel.getByLabel("Battlefield image URL").fill(dataUrl);
   await buildPanel.getByRole("button", { name: "Use image URL" }).click();
   await expect(page.locator(".map-background-image")).toHaveAttribute("src", dataUrl);

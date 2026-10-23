@@ -1,287 +1,85 @@
 import './scripts/load-config.mjs';
-import { Pool } from 'pg';
-import { createServer } from "node:http";
-import next from "next";
-import { WebSocketServer, WebSocket } from "ws";
-
-const args = process.argv.slice(2);
-const portArg = args.findIndex((arg) => arg === "-p" || arg === "--port");
-const hostArg = args.findIndex((arg) => arg === "-H" || arg === "--hostname" || arg === "--host");
-const port = Number(process.env.PORT ?? (portArg >= 0 ? args[portArg + 1] : 3000));
-const hostname = process.env.HOSTNAME ?? (hostArg >= 0 ? args[hostArg + 1] : "0.0.0.0");
-const dev = process.env.NODE_ENV !== "production";
-
-const app = next({ dev, hostname, port });
-const handle = app.getRequestHandler();
-let handleUpgrade;
-const roomStore = globalThis.dndRoomStore ?? new Map();
-globalThis.dndRoomStore = roomStore;
-
-const playerColors = [
-  "#e85d75",
-  "#2fbf71",
-  "#3d8bfd",
-  "#f2b84b",
-  "#9b6ef3",
-  "#16a3a3"
-];
-const socketsByRoom = new Map();
-const tokenSequences = new Map();
-
-function send(socket, message) {
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
+import { createServer } from 'node:http';
+import next from 'next';
+import { WebSocketServer, WebSocket } from 'ws';
+import { databaseReady } from './lib/db.mjs';
+import { readActor, readRoom, roomCommand, cleanup } from './lib/backend.mjs';
+import { ApiError, requireThat, object, identifier, number, rateLimit, originAllowed, MAX_BODY } from './lib/validation.mjs';
+const args=process.argv.slice(2);
+const argument=(names,fallback)=>{const i=args.findIndex(arg=>names.includes(arg));return i>=0?args[i+1]:fallback;};
+const port=Number(process.env.PORT??argument(['-p','--port'],3000));
+const hostname=process.env.HOSTNAME??argument(['-H','--hostname','--host'],'127.0.0.1');
+const dev=process.env.NODE_ENV!=='production';
+if(!process.env.APP_URL&&dev)process.env.APP_URL=`http://127.0.0.1:${port}`;
+if(!process.env.DATABASE_URL)throw new Error('DATABASE_URL is required in every runtime mode. Configure PostgreSQL before starting.');
+if(!process.env.APP_URL||!/^https?:$/.test(new URL(process.env.APP_URL).protocol))throw new Error('APP_URL must be the public HTTP/HTTPS origin.');
+try{await databaseReady();}catch{throw new Error('PostgreSQL is unavailable or schema is missing. Check DATABASE_URL and run db:apply.');}
+const app=next({dev,hostname,port});await app.prepare();
+const handle=app.getRequestHandler(),handleUpgrade=app.getUpgradeHandler();
+function clientIP(request){
+  const peer=request.socket.remoteAddress??'unknown';
+  if(process.env.TRUST_PROXY==='loopback'&&['127.0.0.1','::1','::ffff:127.0.0.1'].includes(peer)){
+    const forwarded=String(request.headers['x-forwarded-for']??'').split(',').pop()?.trim();
+    if(forwarded&&/^[a-f0-9.:]{1,64}$/i.test(forwarded))return forwarded;
   }
+  return peer;
 }
-
-function broadcast(roomCode, message, exceptSocket = null) {
-  const sockets = socketsByRoom.get(roomCode);
-  if (!sockets) return;
-  for (const socket of sockets) {
-    if (socket !== exceptSocket) send(socket, message);
-  }
-}
-
-function assignColor(members, ignoreId, fallback) {
-  if (fallback && !members.some((member) => member.id !== ignoreId && member.color.toLowerCase() === fallback.toLowerCase())) {
-    return fallback;
-  }
-
-  const used = new Set(members.filter((member) => member.id !== ignoreId).map((member) => member.color.toLowerCase()));
-  return playerColors.find((color) => !used.has(color.toLowerCase())) ?? playerColors[0];
-}
-
-function toMember(profile, role, now = Date.now()) {
-  return {
-    ...profile,
-    role,
-    joinedAt: now,
-    lastSeen: now
-  };
-}
-
-function createRoom(roomCode, profile) {
-  const now = Date.now();
-  const assignedProfile = { ...profile, color: assignColor([], profile.id, profile.color) };
-  return {
-    roomCode,
-    createdAt: now,
-    dmId: assignedProfile.id,
-    members: [toMember(assignedProfile, "dm", now)],
-    grid: {
-      rows: 18,
-      columns: 26,
-      cellSize: 44,
-      background: "#f4efe3",
-      feetPerCell: 5
-    },
-    tokens: [],
-    drawings: [],
-    effects: [],
-    rolls: [],
-    combat: {
-      active: false,
-      phase: "idle",
-      round: 1,
-      currentTurnIndex: 0,
-      entries: []
-    }
-  };
-}
-
-function getRoom(roomCode) {
-  return roomStore.get(roomCode.toUpperCase()) ?? null;
-}
-
-function setRoom(room) {
-  roomStore.set(room.roomCode.toUpperCase(), room);
-  return room;
-}
-
-function joinRoom(roomCode, profile) {
-  const code = roomCode.toUpperCase();
-  const existing = getRoom(code);
-  if (!existing) return setRoom(createRoom(code, profile));
-
-  const now = Date.now();
-  const currentMember = existing.members.find((member) => member.id === profile.id);
-  const role = existing.dmId === profile.id ? "dm" : "player";
-  const assignedProfile = { ...profile, color: assignColor(existing.members, profile.id, currentMember?.color ?? profile.color) };
-  const room = {
-    ...existing,
-    members: currentMember
-      ? existing.members.map((member) =>
-          member.id === profile.id ? { ...member, ...assignedProfile, role: member.role, lastSeen: now } : member
-        )
-      : [...existing.members, toMember(assignedProfile, role, now)]
-  };
-  return setRoom(room);
-}
-
-function canControlToken(room, profileId, token) {
-  return room.dmId === profileId || token.ownerId === profileId;
-}
-
-function clampTokenPosition(room, token, x, y) {
-  return {
-    x: Math.max(0, Math.min(room.grid.columns - token.size, Math.floor(Number(x)))),
-    y: Math.max(0, Math.min(room.grid.rows - token.size, Math.floor(Number(y))))
-  };
-}
-
-function applyTokenMove(message) {
-  const room = getRoom(message.roomCode);
-  if (!room) return { error: "Room not found" };
-
-  const token = room.tokens.find((item) => item.id === message.tokenId);
-  if (!token) return { error: "Token not found" };
-  if (!canControlToken(room, message.profileId, token)) return { error: "You cannot move that token" };
-
-  const sequenceKey = `${room.roomCode}:${token.id}`;
-  const previousSequence = tokenSequences.get(sequenceKey) ?? 0;
-  if (message.seq < previousSequence) {
-    return { stale: true, token };
-  }
-  tokenSequences.set(sequenceKey, message.seq);
-
-  const position = clampTokenPosition(room, token, message.x, message.y);
-  const nextToken = { ...token, ...position };
-  const nextRoom = setRoom({
-    ...room,
-    tokens: room.tokens.map((item) => (item.id === token.id ? nextToken : item))
-  });
-  return { room: nextRoom, token: nextToken };
-}
-
-function mergeRoomPatch(incomingRoom, tokenSequencesFromClient = {}) {
-  const existingRoom = getRoom(incomingRoom.roomCode);
-  if (!existingRoom) return incomingRoom;
-
-  const existingTokens = new Map(existingRoom.tokens.map((token) => [token.id, token]));
-  const tokens = incomingRoom.tokens.map((incomingToken) => {
-    const existingToken = existingTokens.get(incomingToken.id);
-    if (!existingToken) return incomingToken;
-
-    const serverSequence = tokenSequences.get(`${existingRoom.roomCode}:${incomingToken.id}`) ?? 0;
-    const clientSequence = tokenSequencesFromClient[incomingToken.id] ?? 0;
-    if (serverSequence > clientSequence) {
-      return { ...incomingToken, x: existingToken.x, y: existingToken.y };
-    }
-    return incomingToken;
-  });
-
-  return { ...incomingRoom, tokens };
-}
-
-function parseMessage(raw) {
-  try {
-    return JSON.parse(raw.toString());
-  } catch {
-    return null;
-  }
-}
-
-function isValidProfile(profile) {
-  return Boolean(profile?.id && profile?.nickname && profile?.color);
-}
-
-if (!dev) {
-  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required in production; JSON storage is development-only.');
-  const database = new Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10000 });
-  try { await database.query('select id from dm_profiles limit 0'); }
-  catch { throw new Error('Production PostgreSQL is unavailable or schema is missing. Check configuration and run db:apply.'); }
-  finally { await database.end(); }
-}
-await app.prepare();
-handleUpgrade = app.getUpgradeHandler();
-
-const server = createServer((req, res) => {
-  handle(req, res);
+const server=createServer((request,response)=>{
+  request.headers['x-dnd-client-ip']=clientIP(request);
+  response.setHeader('X-Content-Type-Options','nosniff');response.setHeader('Referrer-Policy','no-referrer');response.setHeader('X-Frame-Options','DENY');
+  if(Number(request.headers['content-length']??0)>MAX_BODY){response.writeHead(413).end('Request is too large.');return;}
+  Promise.resolve(handle(request,response)).catch(()=>{if(!response.headersSent)response.writeHead(503);response.end('Server unavailable.');});
 });
-const wss = new WebSocketServer({ noServer: true });
-
-server.on("upgrade", (req, socket, head) => {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-  if (url.pathname !== "/ws") {
-    handleUpgrade(req, socket, head);
-    return;
-  }
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit("connection", ws, req);
-  });
+const wss=new WebSocketServer({noServer:true,maxPayload:MAX_BODY,perMessageDeflate:false});
+const socketsByRoom=new Map(),connectionsByActor=new Map(),connectionsByIP=new Map();
+const send=(socket,message)=>{if(socket.readyState===WebSocket.OPEN){if(socket.bufferedAmount>MAX_BODY){socket.close(1013,'Slow connection');return;}socket.send(JSON.stringify(message));}};
+function leave(socket){const set=socketsByRoom.get(socket.roomCode);set?.delete(socket);if(set?.size===0)socketsByRoom.delete(socket.roomCode);socket.roomCode=undefined;}
+function failure(socket,error){send(socket,{type:'sync_error',message:error instanceof ApiError?error.message:'Server or database unavailable. Editing is paused.',status:error instanceof ApiError?error.status:503});}
+async function refresh(socket){try{send(socket,{type:'room_snapshot',room:await readRoom(socket.cookie,socket.roomCode)});}catch(error){failure(socket,error);if(error instanceof ApiError&&[401,403].includes(error.status))socket.close(1008,'Session expired');}}
+globalThis.dndRoomChanged=async code=>{const sockets=socketsByRoom.get(code);if(sockets)await Promise.allSettled([...sockets].map(refresh));};
+server.on('upgrade',async(request,socket,head)=>{
+  try{
+    const url=new URL(request.url??'/',process.env.APP_URL);
+    if(url.pathname!=='/ws'){handleUpgrade(request,socket,head);return;}
+    requireThat(originAllowed(request.headers.origin),'Origin not allowed.',403);
+    const ip=clientIP(request);rateLimit('ws-handshake:'+ip,120,60000);
+    requireThat(wss.clients.size<500&&(connectionsByIP.get(ip)??0)<100,'Connection limit reached.',429);
+    const actor=await readActor(request.headers.cookie);requireThat(actor,'Join a room or sign in first.',401);
+    requireThat((connectionsByActor.get(actor.id)??0)<5,'Account connection limit reached.',429);
+    wss.handleUpgrade(request,socket,head,ws=>{ws.cookie=request.headers.cookie;ws.actorId=actor.id;ws.ip=ip;wss.emit('connection',ws);});
+  }catch(error){socket.end(`HTTP/1.1 ${error instanceof ApiError?error.status:503} Rejected\r\nConnection: close\r\n\r\n`);}
 });
-
-wss.on("connection", (socket) => {
-  socket.on("message", (raw) => {
-    const message = parseMessage(raw);
-    if (!message?.type) {
-      send(socket, { type: "sync_error", message: "Malformed realtime message" });
-      return;
-    }
-
-    if (message.type === "join_room") {
-      if (!message.roomCode || !isValidProfile(message.profile)) {
-        send(socket, { type: "sync_error", message: "Invalid room join" });
-        return;
+wss.on('connection',socket=>{
+  connectionsByActor.set(socket.actorId,(connectionsByActor.get(socket.actorId)??0)+1);connectionsByIP.set(socket.ip,(connectionsByIP.get(socket.ip)??0)+1);
+  socket.alive=true;socket.on('pong',()=>{socket.alive=true;});socket.on('error',()=>socket.terminate());
+  socket.on('message',async raw=>{
+    if(socket.busy){failure(socket,new ApiError(429,'Wait for the previous request.'));return;}
+    socket.busy=true;
+    try{
+      rateLimit('ws-message:'+socket.actorId,1200,60000);
+      let message;try{message=JSON.parse(raw.toString());}catch{throw new ApiError(400,'Malformed JSON.');}
+      object(message);const actor=await readActor(socket.cookie);requireThat(actor&&actor.id===socket.actorId,'Session expired.',401);
+      if(message.type==='join_room'){
+        object(message,['type','roomCode']);const code=identifier(message.roomCode);await readRoom(socket.cookie,code);
+        leave(socket);socket.roomCode=code;const set=socketsByRoom.get(code)??new Set();set.add(socket);socketsByRoom.set(code,set);await refresh(socket);return;
       }
-
-      const room = joinRoom(message.roomCode, message.profile);
-      socket.roomCode = room.roomCode;
-      socket.profileId = message.profile.id;
-      const sockets = socketsByRoom.get(room.roomCode) ?? new Set();
-      sockets.add(socket);
-      socketsByRoom.set(room.roomCode, sockets);
-      send(socket, { type: "room_snapshot", room });
-      broadcast(room.roomCode, { type: "room_snapshot", room }, socket);
-      return;
-    }
-
-    if (!socket.roomCode || !socket.profileId || socket.roomCode !== String(message.roomCode ?? "").toUpperCase()) {
-      send(socket, { type: "sync_error", message: "Join a room before sending updates" });
-      return;
-    }
-
-    if (message.type === "token_move_preview" || message.type === "token_move_commit") {
-      const result = applyTokenMove({ ...message, profileId: socket.profileId });
-      if (result.error) {
-        send(socket, { type: "sync_error", message: result.error });
-        return;
+      requireThat(socket.roomCode&&message.roomCode===socket.roomCode,'Join this room before sending commands.',403);
+      if(message.type==='command'){
+        object(message,['type','roomCode','request']);const room=await roomCommand(socket.cookie,socket.roomCode,message.request);send(socket,{type:'room_snapshot',room,commandId:message.request.id});return;
       }
-      if (result.stale) return;
-
-      const outbound = {
-        type: message.type,
-        roomCode: socket.roomCode,
-        token: result.token,
-        seq: message.seq,
-        profileId: socket.profileId
-      };
-      broadcast(socket.roomCode, outbound, socket);
-      if (message.type === "token_move_commit") send(socket, outbound);
-      return;
-    }
-
-    if (message.type === "room_patch") {
-      if (!message.room || message.room.roomCode !== socket.roomCode) {
-        send(socket, { type: "sync_error", message: "Invalid room patch" });
-        return;
+      if(message.type==='token_move_preview'){
+        object(message,['type','roomCode','tokenId','x','y','seq']);const room=await readRoom(socket.cookie,socket.roomCode);
+        const token=room.tokens.find(t=>t.id===identifier(message.tokenId));requireThat(token,'Token not found.',404);
+        requireThat(actor.id===room.dmId||token.ownerId===actor.id,'You cannot move that token.',403);
+        const x=number(message.x,0,room.grid.columns-token.size),y=number(message.y,0,room.grid.rows-token.size),seq=number(message.seq,0,1e15);
+        for(const other of socketsByRoom.get(socket.roomCode)??[])if(other!==socket)send(other,{type:'token_move_preview',token:{id:token.id,x,y},seq,profileId:actor.id});return;
       }
-      const room = setRoom(mergeRoomPatch(message.room, message.tokenSequences));
-      broadcast(socket.roomCode, { type: "room_snapshot", room }, socket);
-      return;
-    }
+      throw new ApiError(400,'Unknown realtime command.');
+    }catch(error){failure(socket,error);if(error instanceof ApiError&&error.status===401)socket.close(1008,'Session expired');}
+    finally{socket.busy=false;}
   });
-
-  socket.on("close", () => {
-    const roomCode = socket.roomCode;
-    if (!roomCode) return;
-    const sockets = socketsByRoom.get(roomCode);
-    sockets?.delete(socket);
-    if (sockets?.size === 0) socketsByRoom.delete(roomCode);
-  });
+  socket.on('close',()=>{leave(socket);for(const [map,key]of [[connectionsByActor,socket.actorId],[connectionsByIP,socket.ip]]){const n=(map.get(key)??1)-1;if(n>0)map.set(key,n);else map.delete(key);}});
 });
-
-server.listen(port, hostname, () => {
-  console.log(`DND Battle Room listening on http://${hostname}:${port}`);
-});
+const heartbeat=setInterval(()=>{for(const socket of wss.clients){if(!socket.alive){socket.terminate();continue;}socket.alive=false;socket.ping();if(socket.roomCode)void refresh(socket);}},30000);heartbeat.unref();
+const housekeeping=setInterval(()=>{void cleanup().catch(()=>{});},600000);housekeeping.unref();
+server.listen(port,hostname,()=>console.log(`DND Battle Room listening on http://${hostname}:${port}`));

@@ -1,45 +1,43 @@
 # DND Battle Room Project Rulebook
 
-This is the source of truth for development and deployment. Update stale documents when changing these rules. Older design documents are historical.
+This is the source of truth for development and deployment. Update it and README in the same change when behavior changes. Older design documents are historical.
 
-## Product and backend
+## Product and authority
 
-DND Battle Room is a Next.js browser tabletop with a custom Node HTTP/WebSocket server. Preserve the map as the primary room surface, existing DM signup, DM room management, guest-player entry, and room invitation links/codes. The installer creates a regular first DM; there is no server-administrator role.
+Preserve public DM signup, DM room management, guest entry by code/name and invitations. The first installed account is a regular DM; there is no administrator role. New DM passwords require 12–128 characters without symbol rules. Username validation and password hashing must be shared by signup and bootstrap.
 
-Official production storage is local PostgreSQL. Required: `DATABASE_URL` and the applied `db/schema.sql`. A missing/unreachable database or missing schema stops production startup. JSON `.data/dm-backend.json` is development fallback only. Supabase compatibility remains optional; its schema is `supabase/schema.sql`.
+PostgreSQL is the only backend in production, development and tests. Missing configuration, unreachable PostgreSQL or a missing schema stops startup. Never add JSON, Supabase or browser-only success fallbacks. Do not delete preexisting local data files as cleanup. The current implementation targets fresh installations; no legacy password/data/session migration is promised.
 
-Room snapshots have a schema table but current live tabletop state remains in memory. Do not promise encounter-state persistence across restarts without implementing and testing it. PostgreSQL currently persists accounts, sessions, room listings and library items.
+Authenticated identity comes only from opaque DM/guest session cookies. Store SHA-256 token digests and expiration, never plaintext tokens or passwords. Cookies are HTTP-only, SameSite=Lax and Secure when APP_URL uses HTTPS. A room's DM is its saved authenticated owner, not a supplied role/id/name. Another DM joining that room is a player.
 
-## Ports and service
+Players control their own tokens and initiative, and may roll dice. Only the room DM controls maps/build tools, settings, combat progression and ownership reassignment. Lost guest sessions require DM reassignment; names never recover ownership. Shared library updates must include an atomic existing-owner predicate in SQL. All SQL values remain parameter-bound; identifiers come only from constants or the installer's validated/quoted identifiers.
 
-- Production service: `dnd-battle-room`; app listens on `127.0.0.1:3000` behind Caddy HTTPS on 80/443.
-- Temporary dev and Playwright: `127.0.0.1:3100`. Never point tests at port 3000 or the live database.
-- Public installation targets fresh Ubuntu 24.04, x86-64/ARM64, Node.js 24 LTS, PostgreSQL and systemd.
-- App: `/opt/dnd-battle-room`; runtime: `/opt/dnd-battle-room-node`; dedicated user/group: `dnd-battle-room`.
-- Configuration: `/etc/dnd-battle-room/config.json`, root-owned mode 640, service-readable group; directory mode 750. No shell sourcing, inline command-line passwords, logged credentials, or automatic credential rotation.
-- User-owned DNS, inbound 80/443 and a public domain are prerequisites. Installer configures the proxy/certificates, not DNS providers or firewall/router rules.
-- Existing `/root/DND` servers are not migrated or modified. `install.sh` is for fresh installs and same-version recovery, not upgrades.
+## Room state and privacy
 
-## Configuration
+Use the same validated, authorized command handler for HTTP and WebSockets. Never accept complete client room replacements. Persist the full authoritative snapshot, revisions and command deduplication transactionally under a database row lock. Acknowledge and broadcast only committed state. Reject stale revisions rather than overwriting another edit. Final token positions must persist; previews are transient and carry only id/coordinates.
 
-Installer-managed `config.json` supplies string settings through `scripts/load-config.mjs`. Public app settings include `SITE_NAME` (default DND Battle Room), `APP_URL`, `DATABASE_URL`, `SESSION_SECRET`, `NODE_ENV`, `HOSTNAME`, and `PORT`. `INSTALL_*` values record recovery settings and are not exported. The session implementation uses database-backed random tokens, not `SESSION_SECRET` signing.
+Filter every snapshot for its recipient. Private rolls go only to the roller and room DM. DM notes are stored separately and never sent to players, including after reassignment. DM-owned HP is hidden; previously hidden HP stays visible only to the assigned owner and DM after reassignment. Ordinary player-token HP and character notes remain shared. Library notes are shared preset content.
 
-Manual development may use ignored `.env.local`; `.env.example` is a committed template. Production services load JSON rather than dotenv. Do not commit real configuration, data files, generated test artifacts or build caches. Never rotate a database password or reset the first DM on installer retries.
+Generate app dice on the server. Keep explicitly labelled manual initiative input. Pause editing on server/database failure, visibly revert uncommitted changes and reload saved state after reconnecting. Do not persist room snapshots in browser storage. Browser preferences confer no authority.
 
-First-DM bootstrap shares account validation and hashing with signup. The initial setup enforces a 12-character password; public signup retains its existing minimum. HTTPS deployments set secure session cookies. `/api/health` checks PostgreSQL/schema readiness without revealing internals.
+Validate field allowlists, sizes, counts, numeric ranges, images and all WebSocket messages. Bound request/frame sizes, sockets, authentication work and rate-limit maps. Revalidate sessions on messages and broadcasts; verify browser WebSocket Origin against APP_URL. Only trust Caddy's forwarded address when TRUST_PROXY=loopback and the peer is loopback. This release uses one Node process; rate limits are process-local.
 
-## Required checks
+## Installation and configuration
 
-Before deploying, run `npm run typecheck`, `npm run test:e2e` on port 3100, then `npm run build`. Playwright starts its own temporary server; do not reuse a live process. Installation changes also require Bash syntax, ShellCheck, Python configuration tests, and `npm run test:installer`.
+- Fresh Ubuntu 24.04 x86-64/ARM64, Node.js 24 LTS, local PostgreSQL, systemd and Caddy.
+- Production app binds 127.0.0.1:3000; public HTTPS uses 80/443, including /ws. Browser tests use 3100; transport tests use 3101. Never test against live data or port 3000.
+- App /opt/dnd-battle-room; runtime /opt/dnd-battle-room-node; dedicated user/group dnd-battle-room.
+- Root-owned /etc/dnd-battle-room/config.json mode 640, directory 750. Load JSON with scripts/load-config.mjs; never shell-source settings or put passwords in process arguments/logs.
+- Configuration: DATABASE_URL, SITE_NAME (default DND Battle Room), APP_URL, TRUST_PROXY, NODE_ENV, HOSTNAME and PORT. INSTALL_* records retry settings and is not exported. SESSION_SECRET is unused and removed.
+- Manual development uses ignored .env.local and the tracked .env.example template. PostgreSQL is mandatory; Playwright requires an explicit dedicated TEST_DATABASE_URL with test in the database name.
+- User-owned DNS and inbound 80/443 are prerequisites. No DNS-provider/firewall automation, Docker installer, external database installer or migration from /root/DND.
+- Preserve completed setup and saved credentials on same-version retries. Never rotate passwords, reset accounts, drop data or overwrite unrelated services/proxy files automatically.
+- Root installs privileged service templates only from freshly downloaded root-owned staging. Never use the service-user-writable app copy as a privileged source.
 
-Test desktop and mobile for visual changes; keep screenshots/traces ignored under `test-results`. Report exact blockers rather than claiming unavailable tests passed. Clean Ubuntu install, same-version retry, reboot, public HTTPS and two-browser WebSocket verification are release acceptance checks; see `RELEASE-v1.0.0.md`.
+## Required checks and release
 
-## Schema and documentation
+Run typecheck, PostgreSQL-backed Playwright on 3100, then production build in that order. Run real PostgreSQL security tests, post-build HTTP/WebSocket transport tests, installer/configuration tests, Bash syntax, ShellCheck and dependency audit. Keep generated output/caches ignored. Test desktop/mobile UI changes and inspect screenshots. Document unavailable checks honestly.
 
-Self-hosted schema changes belong in `db/schema.sql`; compatibility changes belong in `supabase/schema.sql`. Add indexes for common ownership/filter queries. Document schema requirements and do not infer live data migration from development fallback files.
+Schema belongs in db/schema.sql and must be repeatable without account resets or data loss. Backups include complete encounters and private fields. README documents protected PostgreSQL/config backups, restore to an empty database, manual updates and troubleshooting. No unattended updates.
 
-Every meaningful change must update README/rulebook as appropriate: user workflow, backend requirements, environment variables, schema, test instructions, and whether a service restart is needed. Prefer these durable files over overlapping plan documents. Update E2E selectors when UI text changes. Keep DM/player workflows distinct and preserve usable desktop/mobile layouts.
-
-## Release process
-
-MIT license, package/release version 1.0.0. `private: true` only prevents accidental npm publication. Before a public release, review the current tree and Git history for credentials/private deployment data, rotate any exposed secrets, run CI and fresh-server acceptance, and review the final diff. Never rewrite history automatically. Repository visibility, tag creation and GitHub release publication happen only after final review. Never alter the existing live server as part of local release preparation.
+MIT license, v1.0.0, private:true prevents accidental npm publication. Review the tree and reachable Git history for credentials/private information; rotate confirmed exposed secrets before publication. Never rewrite history automatically. Ubuntu x86-64/ARM64 install/retry/reboot/public HTTPS and backup/restore acceptance remain mandatory before publication. Final diff review precedes tag creation, repository visibility changes and GitHub release publication. Local preparation does not authorize deployment or publication.

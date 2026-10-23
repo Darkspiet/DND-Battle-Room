@@ -1,3 +1,5 @@
+> Historical implementation report. Backend and security behavior described here has been superseded by [the current rulebook](docs/PROJECT_RULEBOOK.md) and [security review](docs/SECURITY_REVIEW-2026-10-23.md).
+
 > Historical report for an earlier version. Current setup and verification are documented in README.md, docs/PROJECT_RULEBOOK.md, and docs/RELEASE-v1.0.0.md.
 
 # DND Battle Room End Report

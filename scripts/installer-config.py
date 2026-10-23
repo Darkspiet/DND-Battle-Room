@@ -8,10 +8,10 @@ sys.stdout.reconfigure(encoding="utf-8")
 from urllib.parse import quote
 
 KEYS = ('SITE_NAME', 'INSTALL_DOMAIN', 'INSTALL_DM_USERNAME', 'INSTALL_DM_NAME',
-        'INSTALL_DB_NAME', 'INSTALL_DB_USER', 'INSTALL_DB_PASSWORD', 'SESSION_SECRET')
+        'INSTALL_DB_NAME', 'INSTALL_DB_USER', 'INSTALL_DB_PASSWORD')
 
 def validate(values):
-    site, domain, username, name, db, user, password, secret = values
+    site, domain, username, name, db, user, password = values
     if any(not v or any(c in v for c in '\r\n\0') for v in values):
         raise ValueError('Settings must be nonempty single-line values.')
     if len(site) > 100 or len(name) > 100:
@@ -23,15 +23,13 @@ def validate(values):
     for identifier in (db, user):
         if not re.fullmatch(r'[a-z_][a-z0-9_]{0,62}', identifier) or identifier.startswith('pg_') or identifier in ('postgres', 'template0', 'template1'):
             raise ValueError('Database names/users must be lowercase SQL identifiers; reserved names are not allowed.')
-    if len(secret) < 32:
-        raise ValueError('Session secret must contain at least 32 characters.')
     if len(password) < 16:
         raise ValueError('Database passwords must contain at least 16 characters.')
 
 def create(values):
     validate(values)
     config = dict(zip(KEYS, values))
-    config.update(NODE_ENV='production', HOSTNAME='127.0.0.1', PORT='3000',
+    config.update(NODE_ENV='production', HOSTNAME='127.0.0.1', PORT='3000', TRUST_PROXY='loopback',
                   APP_URL='https://' + config['INSTALL_DOMAIN'],
                   DATABASE_URL='postgresql://{}:{}@127.0.0.1:5432/{}'.format(
                       quote(config['INSTALL_DB_USER'], safe=''), quote(config['INSTALL_DB_PASSWORD'], safe=''),
@@ -47,9 +45,9 @@ def main():
         config = create(values)
         destination = sys.argv[2]
         fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'w') as target: json.dump(config, target, ensure_ascii=False, indent=2)
+        with os.fdopen(fd, 'w', encoding='utf-8') as target: json.dump(config, target, ensure_ascii=False, indent=2)
     else:
-        with open(sys.argv[2]) as source: config = json.load(source)
+        with open(sys.argv[2], encoding='utf-8') as source: config = json.load(source)
         validate([config[key] for key in KEYS])
         if mode == 'read':
             sys.stdout.buffer.write(('\0'.join(config[key] for key in KEYS) + '\0').encode())

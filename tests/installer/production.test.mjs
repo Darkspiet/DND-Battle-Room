@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
 for (const [name, database, expected] of [
-  ['missing database', undefined, 'DATABASE_URL is required in production'],
-  ['unavailable database', 'postgresql://test:test@127.0.0.1:1/missing', 'Production PostgreSQL is unavailable']
+  ['missing database', undefined, 'DATABASE_URL is required in every runtime mode'],
+  ['unavailable database', 'postgresql://test:test@127.0.0.1:1/missing', 'PostgreSQL is unavailable']
 ]) {
   test(`production refuses ${name} before starting HTTP`, () => {
-    const env = { ...process.env, NODE_ENV: 'production' };
+    const env = { ...process.env, NODE_ENV: 'production', APP_URL: 'https://example.com' };
     delete env.DND_CONFIG_FILE;
     delete env.DATABASE_URL;
     if (database) env.DATABASE_URL = database;
@@ -17,3 +17,11 @@ for (const [name, database, expected] of [
     assert.doesNotMatch(result.stdout, /listening on/);
   });
 }
+
+// Regression for the root privilege boundary: app files are service-user writable.
+test('privileged service template comes from protected release staging', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile('install.sh', 'utf8');
+  assert.match(source, /install -m 644 "\$WORK\/source\/deploy\/dnd-battle-room\.service" \/etc\/systemd\/system/);
+  assert.doesNotMatch(source, /install[^\n]*"\$APP_DIR\/deploy/);
+});

@@ -22,7 +22,7 @@ test('site identity is consistent on desktop and mobile', async ({ page }) => {
 test('a separate player browser receives live DM token and dice updates', async ({ page, browser }) => {
   const username = `sync-${Date.now().toString(36)}`;
   const signup = await page.request.post('/api/dm/signup', {
-    data: { username, password: 'testpass', name: 'Sync DM', color: '#b7394b' }
+    data: { username, password: 'test password 123!', name: 'Sync DM', color: '#b7394b' }
   });
   expect(signup.ok()).toBeTruthy();
   await page.goto('/dm/dashboard');

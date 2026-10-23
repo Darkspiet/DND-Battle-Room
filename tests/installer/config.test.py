@@ -15,7 +15,7 @@ spec.loader.exec_module(config)
 class ConfigurationTests(unittest.TestCase):
     def settings(self):
         return ['The "Dragon" $HOME `room`', 'battles.example.com', 'gamemaster', 'First DM',
-                'dnd_room', 'dnd_user', 'a long \'"\\ $`#@:/% Ã¼ password', 'f' * 64]
+                'dnd_room', 'dnd_user', 'a long \'"\\ $`#@:/% ü password']
 
     def test_roundtrip_and_sql_escaping(self):
         values = self.settings()

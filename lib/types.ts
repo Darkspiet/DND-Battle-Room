@@ -50,6 +50,7 @@ export type Token = {
   size: number;
   hp?: string;
   note?: string;
+  hpPrivate?: boolean;
 };
 
 export type DMRoomSummary = {
@@ -155,6 +156,7 @@ export type CombatState = {
 };
 
 export type RoomState = {
+  revision: number;
   roomCode: string;
   createdAt: number;
   dmId: string;

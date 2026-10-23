@@ -1873,3 +1873,6 @@ input[type="range"] {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.table-shell[data-paused="true"] > :not(.room-header):not(.sync-warning) { pointer-events: none; opacity: .65; }
+.start-copy h1 { overflow-wrap: anywhere; }

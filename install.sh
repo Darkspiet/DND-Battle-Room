@@ -118,7 +118,7 @@ if [[ "$RESUME" == true ]]; then
   python3 "$HELPER" read "$CONFIG_FILE" > "$WORK/settings"
   mapfile -d '' -t settings < "$WORK/settings"
   SITE_NAME=${settings[0]}; DOMAIN=${settings[1]}; DM_USERNAME=${settings[2]}; DM_NAME=${settings[3]}
-  DB_NAME=${settings[4]}; DB_USER=${settings[5]}; DB_PASSWORD=${settings[6]}; SESSION_SECRET=${settings[7]}
+  DB_NAME=${settings[4]}; DB_USER=${settings[5]}; DB_PASSWORD=${settings[6]}
   rm -f "$WORK/settings"
   printf 'Resuming saved configuration; existing credentials will be preserved.\n'
 else
@@ -132,8 +132,7 @@ else
   choice=
   read -r -u 3 -p 'Generate a secure database password? [Y/n]: ' choice
   if [[ "$choice" == n || "$choice" == N ]]; then secret DB_PASSWORD 'Database password (at least 16 characters)'; else DB_PASSWORD=$(random_secret); fi
-  SESSION_SECRET=$(random_secret)
-  printf '%s\0' "$SITE_NAME" "$DOMAIN" "$DM_USERNAME" "$DM_NAME" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" "$SESSION_SECRET" | python3 "$HELPER" create "$WORK/config.json"
+  printf '%s\0' "$SITE_NAME" "$DOMAIN" "$DM_USERNAME" "$DM_NAME" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" | python3 "$HELPER" create "$WORK/config.json"
 fi
 if ! done_stage bootstrap; then
   secret DM_PASSWORD 'First DM password (at least 12 characters)'
@@ -185,6 +184,8 @@ if ! done_stage dependencies; then
   mark dependencies
 fi
 [[ -f node_modules/next/package.json ]] || fail 'Completed dependency installation is missing files; inspect the app directory.'
+STAGE='dependency security audit'
+app_run npm audit --omit=dev --audit-level=high
 STAGE='PostgreSQL provisioning'
 # Record intent before creation so interruption can resume without changing a password.
 if ! done_stage database_started; then
@@ -217,7 +218,7 @@ if ! done_stage build; then
 fi
 [[ -f .next/BUILD_ID ]] || fail 'Completed production build is missing; inspect the app directory.'
 STAGE='application service'
-install -m 644 deploy/dnd-battle-room.service /etc/systemd/system/dnd-battle-room.service
+install -m 644 "$WORK/source/deploy/dnd-battle-room.service" /etc/systemd/system/dnd-battle-room.service
 sha256sum /etc/systemd/system/dnd-battle-room.service > "$CONFIG_DIR/service.sha256"
 systemctl daemon-reload
 systemctl enable "$SERVICE"
