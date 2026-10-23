@@ -54,3 +54,10 @@ Not verified: Ubuntu x86-64/ARM64 installer execution, systemd interruption/retr
 4. Verify the raw tagged installer and release archive URLs resolve.
 
 No commit, tag, visibility change, release publication, unattended updates or deployment was performed during this work.
+
+
+## CI provisioning-test cleanup correction
+
+The provisioning fixture now waits for every application PostgreSQL client to emit its disconnect event before dropping its temporary database. `pg-pool.end()` can resolve before those sockets close; forced database deletion during that interval can raise an asynchronous “terminating connection due to administrator command” error. Cleanup no longer uses `DROP DATABASE ... WITH (FORCE)`, and its administrator pool/temporary files are closed even when database cleanup fails. This changes test teardown only.
+
+Validation: the exact PostgreSQL CI test command passed 10 consecutive local runs (30 test passes) against PostgreSQL 16.15 on Windows. GitHub Actions has not been rerun from this workspace.

@@ -17,6 +17,7 @@ test('real PostgreSQL provisioning, schema, first login credentials and retries'
   const password = `long ' " \\ $ # @ : / % ü password`;
   const directory = await mkdtemp(path.join(tmpdir(), 'dnd-postgres-'));
   let app;
+  const appConnectionsClosed = [];
   try {
     const file = path.join(directory, 'config.json');
     const values = ['The Dragon', 'battles.example.com', 'gamemaster', 'Game Master', database, role, password];
@@ -32,6 +33,11 @@ test('real PostgreSQL provisioning, schema, first login credentials and retries'
     connection.hostname = adminUrl.hostname;
     connection.port = adminUrl.port;
     app = new Pool({ connectionString: connection.href });
+    // pg-pool can resolve end() before its clients finish disconnecting.
+    // Register before connecting so even short-lived clients are accounted for.
+    app.on('connect', client => {
+      appConnectionsClosed.push(new Promise(resolve => client.once('end', resolve)));
+    });
     const schema = await readFile('db/schema.sql', 'utf8');
     await app.query(schema);
     await app.query(schema);
@@ -43,10 +49,18 @@ test('real PostgreSQL provisioning, schema, first login credentials and retries'
     assert.notEqual(row.password_hash, (await hashPassword('different password', row.password_salt)).hash);
     assert.equal((await app.query('select count(*) from dm_sessions')).rows[0].count, '0');
   } finally {
-    if (app) await app.end();
-    await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-    await admin.query(`DROP ROLE IF EXISTS "${role}"`);
-    await admin.end();
-    await rm(directory, { recursive: true, force: true });
+    try {
+      if (app) {
+        await app.end();
+        await Promise.all(appConnectionsClosed);
+      }
+      // Never terminate clients to clean up this fixture: unexpected remaining
+      // connections should fail cleanup rather than cause asynchronous errors.
+      await admin.query(`DROP DATABASE IF EXISTS "${database}"`);
+      await admin.query(`DROP ROLE IF EXISTS "${role}"`);
+    } finally {
+      await admin.end();
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });
