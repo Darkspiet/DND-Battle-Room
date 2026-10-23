@@ -1,10 +1,12 @@
 # DND Battle Room
 
-DND Battle Room is a self-hosted tabletop for running encounters together in your browser. Prepare a battlefield, invite players with a room code, and manage tokens, initiative and dice in one shared room.
+This DND Battle Room is a self-hosted tabletop for running encounters together in your browser. U can prepare a battlefield, invite players with a room code, and manage tokens, initiative and dice in one shared room.
+
+I build this App for my DND group and build it after the wishes of my Companions and the DM of what they can do
 
 ![A sample encounter with player tokens, goblins, walls, a spell effect and a shared turn order](docs/images/battle-room.png)
 
-## Bring your encounters to the table
+## These are some of the features:
 
 - **Build the battlefield.** Upload a map or link a background, adjust the grid, draw walls and place spell effects.
 - **Move your pieces.** Create tokens with names, pictures, sizes and HP/status. Players control their own characters; the DM manages the encounter.
