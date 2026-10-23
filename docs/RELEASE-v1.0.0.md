@@ -61,3 +61,10 @@ No commit, tag, visibility change, release publication, unattended updates or de
 The provisioning fixture now waits for every application PostgreSQL client to emit its disconnect event before dropping its temporary database. `pg-pool.end()` can resolve before those sockets close; forced database deletion during that interval can raise an asynchronous “terminating connection due to administrator command” error. Cleanup no longer uses `DROP DATABASE ... WITH (FORCE)`, and its administrator pool/temporary files are closed even when database cleanup fails. This changes test teardown only.
 
 Validation: the exact PostgreSQL CI test command passed 10 consecutive local runs (30 test passes) against PostgreSQL 16.15 on Windows. GitHub Actions has not been rerun from this workspace.
+
+
+## Guest join hydration correction
+
+Guest name/avatar inputs remain disabled until stored preferences have loaded and the room is verified open. Previously an early name edit could be replaced by the initial profile effect on a slower browser/CI runner. The reassignment test now holds JavaScript loading to exercise this boundary, verifies the chosen name in the join response and uses that server-issued profile id instead of searching by display name.
+
+Validation: the delayed-hydration regression failed against the original enabled input and passed after the fix. Typecheck, all 19 Chromium tests and the production build passed locally in the required order. GitHub Actions still requires a new run.

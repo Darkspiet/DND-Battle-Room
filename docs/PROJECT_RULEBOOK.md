@@ -4,7 +4,7 @@ This is the source of truth for development and deployment. Update it and README
 
 ## Product and authority
 
-Preserve public DM signup, DM room management, guest entry by code/name and invitations. The first installed account is a regular DM; there is no administrator role. New DM passwords require 12–128 characters without symbol rules. Username validation and password hashing must be shared by signup and bootstrap.
+Preserve public DM signup, DM room management, guest entry by code/name and invitations. Keep guest join inputs disabled until hydration, saved preferences and room readiness finish, so startup cannot overwrite early edits. The first installed account is a regular DM; there is no administrator role. New DM passwords require 12–128 characters without symbol rules. Username validation and password hashing must be shared by signup and bootstrap.
 
 PostgreSQL is the only backend in production, development and tests. Missing configuration, unreachable PostgreSQL or a missing schema stops startup. Never add JSON, Supabase or browser-only success fallbacks. Do not delete preexisting local data files as cleanup. The current implementation targets fresh installations; no legacy password/data/session migration is promised.
 

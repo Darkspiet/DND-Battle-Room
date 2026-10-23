@@ -72,11 +72,11 @@ export default function PlayerProfilePage() {
         <form className="auth-form" onSubmit={submit}>
           <label>
             Player name
-            <input value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={28} />
+            <input disabled={roomStatus !== "open"} value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={28} />
           </label>
           <label>
             Optional picture
-            <input accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => handleAvatar(event.target.files?.[0] ?? null)} type="file" />
+            <input disabled={roomStatus !== "open"} accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => handleAvatar(event.target.files?.[0] ?? null)} type="file" />
           </label>
           {avatarUrl ? (
             <div className="token-preview">

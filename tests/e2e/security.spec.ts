@@ -11,9 +11,27 @@ test('DM reassigns a token without exposing private notes; failed saves pause an
   const context=await browser.newContext();
   try {
     const guest=await context.newPage();
-    await guest.goto(new URL('/join/'+code,page.url()).href);
+    // Hold hydration to reproduce slow CI: SSR inputs must not accept edits
+    // that the preference-loading effect would subsequently replace.
+    let releaseScripts!: () => void;
+    const hydrationGate=new Promise<void>(resolve=>{releaseScripts=resolve;});
+    await guest.route('**/*',async route=>{
+      if(route.request().resourceType()==='script')await hydrationGate;
+      await route.continue();
+    });
+    try {
+      await guest.goto(new URL('/join/'+code,page.url()).href,{waitUntil:'commit'});
+      await expect(guest.getByLabel('Player name')).toBeDisabled();
+    } finally {releaseScripts();}
+    await expect(guest.getByLabel('Player name')).toBeEnabled();
+    await guest.unrouteAll({behavior:'wait'});
     await guest.getByLabel('Player name').fill('New owner');
+    const joinResponse=guest.waitForResponse(response=>new URL(response.url()).pathname===roomPath&&response.request().method()==='POST');
     await guest.getByRole('button',{name:'Enter lobby'}).click();
+    const joined=await joinResponse;
+    expect(joined.ok()).toBeTruthy();
+    const {profile:member}=await joined.json();
+    expect(member.nickname).toBe('New owner');
     await expect(guest.locator('.sync-badge.online')).toBeVisible();
     const response=await page.request.post(roomPath+'/commands',{data:{id:crypto.randomUUID(),commands:[{type:'token.create',payload:{token:{id:'private-monster',name:'Private monster',hp:'Secret hit points',note:'Secret encounter note'}}}]}});
     expect(response.ok()).toBeTruthy();
@@ -23,8 +41,6 @@ test('DM reassigns a token without exposing private notes; failed saves pause an
     await guest.locator('.token').click();
     await expect(guest.getByLabel('HP / status')).toHaveCount(0);
     await expect(guest.getByLabel('Note',{exact:true})).toHaveValue('');
-    const joined=await (await guest.request.get(roomPath)).json();
-    const member=joined.members.find((entry:{nickname:string})=>entry.nickname==='New owner');
     await page.getByLabel('Token owner').selectOption(member.id);
     await expect(guest.getByLabel('HP / status')).toHaveValue('Secret hit points');
     await expect(guest.getByLabel('HP / status')).toBeEnabled();
