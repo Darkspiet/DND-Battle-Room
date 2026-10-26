@@ -16,13 +16,18 @@ async function ack<T = { scene: SceneRecord; id: string }>(socket: Socket, event
   return result.data;
 }
 async function signup(api: APIRequestContext) {
+  await api.post("/api/v1/auth/signin", { data: { username: "e2e-admin", password: process.env.E2E_ADMIN_PASSWORD } });
+  const invitation = await api.post("/api/v1/auth/invites");
+  expect(invitation.ok()).toBeTruthy();
+  const { code: inviteCode } = await invitation.json();
+  await api.delete("/api/v1/auth/session");
   const username = `dm-${randomUUID().slice(0, 12)}`;
-  const response = await api.post("/api/v1/auth/signup", { data: { username, password, displayName: "Security DM", color: "#b83c52" } });
+  const response = await api.post("/api/v1/auth/signup", { data: { username, password, inviteCode, displayName: "Security DM", color: "#b83c52" } });
   expect(response.ok()).toBeTruthy();
   expect((await response.json()).user.role).toBe("dm");
   return username;
 }
-test("public signup, literal credentials, SQL and origin safety", async ({ request }) => {
+test("invited signup, literal credentials, SQL and origin safety", async ({ request }) => {
   const username = await signup(request);
   expect((await request.post("/api/v1/auth/signin", { data: { username: `x' OR '1'='1`, password } })).status()).toBe(400);
   expect((await request.post("/api/v1/auth/signin", { data: { username, password: `x' OR '1'='1` } })).ok()).toBe(false);

@@ -12,7 +12,7 @@ Unused direct declarations for Radix Dropdown Menu, Radix Tooltip and Zustand we
 
 - SQL values are bound through Drizzle/pg parameters. The installer restricts database identifiers, independently quotes PostgreSQL password literals and URL-encodes connection-string components.
 - The installer and service parse literal JSON; user settings are never sourced/evaluated as shell commands. Passwords are confirmed without echo and initial plaintext passwords are not saved.
-- DMs and guests use independent opaque, hashed sessions. Public signup cannot grant administrator privileges. Token reassignment resolves the target membership/name on the server.
+- DMs and guests use independent opaque, hashed sessions. DM signup requires a single-use, 72-hour invitation from an authenticated DM unless the operator explicitly enables open signup. Only invitation digests are stored; consuming the code and creating the account/session are one PostgreSQL transaction. Neither mode grants administrator privileges. Token reassignment resolves the target membership/name on the server.
 - Scene commands are validated under a row lock and revision check. Player commands are restricted to their own tokens; map/settings/combat changes require campaign ownership.
 - Recipient projection strips DM notes and private HP in HTTP, socket acknowledgments and committed-state broadcasts. Private dice reach only the roller and campaign DM. Existing sockets revalidate sessions before acting and before private broadcasts.
 - Origin checks, body/frame/connection limits, restricted dice expressions and authentication rate limits bound important entry points. Failed database access produces an error rather than a local-only save.

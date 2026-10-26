@@ -12,12 +12,17 @@ const COLORS = ["#b83c52", "#2f7f62", "#3f72af", "#a66b32", "#7a5aa6", "#d3b45e"
 export function DMAuth() {
   const router = useRouter();
   const [mode, setMode] = useState<"signin" | "signup" | "reset">("signin");
+  const [inviteRequired, setInviteRequired] = useState(true);
+  const [policyLoaded, setPolicyLoaded] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
-  const [form, setForm] = useState({ username: "", password: "", displayName: "", resetCode: "", color: COLORS[0] });
+  const [form, setForm] = useState({ username: "", password: "", displayName: "", resetCode: "", inviteCode: "", color: COLORS[0] });
 
   useEffect(() => {
+    void apiFetch<{ inviteRequired: boolean }>("/api/v1/auth/signup")
+      .then((policy) => { setInviteRequired(policy.inviteRequired); setPolicyLoaded(true); })
+      .catch(() => setError("Could not load signup settings. Reload the page to try again."));
     void apiFetch<{ user: DMUser | null }>("/api/v1/auth/session")
       .then(({ user }) => { if (user) router.replace("/dm/dashboard"); })
       .catch(() => undefined);
@@ -67,7 +72,7 @@ export function DMAuth() {
         <div className="auth-heading">
           <span className="section-icon"><KeyRound aria-hidden="true" /></span>
           <h2>{mode === "signin" ? "Sign in as DM" : mode === "signup" ? "Create a DM account" : "Reset password"}</h2>
-          <p>{mode === "signin" ? "Use your home-server account." : mode === "signup" ? "Create your account to prepare and run campaigns." : "Enter the one-time reset code from the server operator."}</p>
+          <p>{mode === "signin" ? "Use your home-server account." : mode === "signup" ? (inviteRequired ? "Ask an existing DM for an invitation code to create your account." : "Create your account to prepare and run campaigns.") : "Enter the one-time reset code from the server operator."}</p>
         </div>
 
         <div className="segmented" aria-label="Authentication mode">
@@ -79,6 +84,7 @@ export function DMAuth() {
         <form className="stack-form" onSubmit={submit}>
           {mode === "signup" ? (
             <>
+              {inviteRequired ? <label>DM invitation code<input autoComplete="off" maxLength={128} required value={form.inviteCode} onChange={(event) => setForm({ ...form, inviteCode: event.target.value })} /><small>Single-use code from an existing DM; expires after 72 hours.</small></label> : null}
               <label>Display name<input maxLength={48} required value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} /></label>
             </>
           ) : null}
@@ -92,7 +98,7 @@ export function DMAuth() {
               </div>
             </fieldset>
           ) : null}
-          <button className="button primary-button wide" disabled={pending} type="submit">
+          <button className="button primary-button wide" disabled={pending || (mode === "signup" && !policyLoaded)} type="submit">
             {mode === "signin" ? <LogIn aria-hidden="true" /> : mode === "signup" ? <UserPlus aria-hidden="true" /> : <RotateCcwKey aria-hidden="true" />}
             {pending ? "Working..." : mode === "signin" ? "Sign in" : mode === "signup" ? "Create DM account" : "Set new password"}
           </button>

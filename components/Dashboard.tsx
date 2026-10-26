@@ -1,5 +1,6 @@
 "use client";
 
+import { DMInvitations } from "./DMInvitations";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowRight,
@@ -199,6 +200,7 @@ export function Dashboard() {
       </Dialog.Root>
 
       <div className="dashboard-main">
+        {user ? <DMInvitations /> : null}
         <section className="page-heading">
           <div>
             <p className="eyebrow">Campaign library</p>

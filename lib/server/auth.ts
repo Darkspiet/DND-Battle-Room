@@ -1,9 +1,11 @@
 import { hashPassword, passwordMatches, validateCredentials, normalizeUsername } from "../authCredentials.mjs";
 import { verify } from "@node-rs/argon2";
 import { and, eq, gt, isNull, lt } from "drizzle-orm";
-import { assets, authSessions, passwordResetTokens, users } from "../../db/schema";
+import { assets, authSessions, dmInvites, passwordResetTokens, users } from "../../db/schema";
 import type { DMUser } from "../domain/types";
 import { db } from "./db";
+import { HttpError } from "./httpError";
+import { dmInviteRequired } from "./signupPolicy";
 import {
   createOpaqueToken,
   DM_SESSION_MAX_AGE_SECONDS,
@@ -55,10 +57,25 @@ export async function signInDM(username: string, password: string) {
   return { user: publicUser(row), token: session.token };
 }
 
-export async function signUpDM(input: { username: string; password: string; displayName: string; color: string }) {
+export async function signUpDM(input: { username: string; password: string; displayName: string; color: string; inviteCode?: string }) {
   const username = validateCredentials(input.username, input.password);
+  const inviteRequired = dmInviteRequired();
+  const tokenHash = hashOpaqueToken(input.inviteCode?.trim() ?? "");
+  if (inviteRequired) {
+    const [invite] = await db.select().from(dmInvites).where(and(
+      eq(dmInvites.tokenHash, tokenHash), isNull(dmInvites.usedAt), gt(dmInvites.expiresAt, new Date())
+    )).limit(1);
+    if (!invite) throw invalidInvite();
+  }
   const credential = await passwordHash(input.password);
   return db.transaction(async (tx) => {
+    if (inviteRequired) {
+      const [invite] = await tx.select().from(dmInvites).where(and(
+        eq(dmInvites.tokenHash, tokenHash), isNull(dmInvites.usedAt), gt(dmInvites.expiresAt, new Date())
+      )).for("update").limit(1);
+      if (!invite || invite.expiresAt.getTime() <= Date.now()) throw invalidInvite();
+      await tx.update(dmInvites).set({ usedAt: new Date() }).where(eq(dmInvites.tokenHash, tokenHash));
+    }
     const [row] = await tx.insert(users).values({
       username, displayName: input.displayName, role: "dm", color: input.color, passwordHash: credential
     }).onConflictDoNothing().returning();
@@ -66,6 +83,26 @@ export async function signUpDM(input: { username: string; password: string; disp
     const session = newSession(row.id);
     await tx.insert(authSessions).values(session.values);
     return { user: publicUser(row), token: session.token };
+  });
+}
+
+function invalidInvite() {
+  return new HttpError(400, "INVITE_REQUIRED", "Enter a valid, unused DM invitation code. Ask an existing DM for a new code if it has expired.");
+}
+
+export async function createDMInvite(userId: string) {
+  const code = createOpaqueToken();
+  const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+  return db.transaction(async (tx) => {
+    const [issuer] = await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update").limit(1);
+    if (!issuer) throw new HttpError(401, "AUTH_REQUIRED", "Sign in as a DM first.");
+    await tx.delete(dmInvites).where(and(eq(dmInvites.createdBy, userId), lt(dmInvites.expiresAt, new Date())));
+    const pending = await tx.select({ hash: dmInvites.tokenHash }).from(dmInvites).where(and(
+      eq(dmInvites.createdBy, userId), isNull(dmInvites.usedAt)
+    )).limit(20);
+    if (pending.length >= 20) throw new HttpError(429, "INVITE_LIMIT", "You already have 20 unused invitations. Use one or wait for them to expire.");
+    await tx.insert(dmInvites).values({ tokenHash: hashOpaqueToken(code), createdBy: userId, expiresAt });
+    return { code, expiresAt: expiresAt.toISOString() };
   });
 }
 

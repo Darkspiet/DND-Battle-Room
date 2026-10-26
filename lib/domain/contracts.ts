@@ -14,6 +14,7 @@ export const signInSchema = z.object({
 });
 
 export const signUpSchema = signInSchema.extend({
+  inviteCode: z.string().trim().max(128).optional(),
   password: z.string().refine((value) => [...value].length >= 12 && [...value].length <= 128 && Boolean(value.trim()) && new TextEncoder().encode(value).length <= 512, "Use a password of 12–128 characters."),
   displayName: z.string().trim().min(2).max(48),
   color: color.default("#b83c52")

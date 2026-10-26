@@ -5,7 +5,7 @@ Keep one repository, one Node.js application service and one installer. Preserve
 ## Product and security rules
 
 - PostgreSQL is authoritative in production, development and tests. Commit scene commands transactionally with revision checks and duplicate-command handling. Keep uploaded media outside scene JSON.
-- Public signup and installer bootstrap create regular DMs. Authenticate DMs and guests with server sessions; never trust supplied roles, owner names or matching display names. Revalidate socket sessions before commands and private broadcasts.
+- Signup requires a single-use DM invitation by default; only the operator setting `DM_SIGNUP_MODE=open` allows public signup. Any existing DM may issue codes. Installer bootstrap creates the first regular DM without a code. Authenticate DMs and guests with server sessions; never trust supplied roles, owner names or matching display names. Revalidate socket sessions before commands and private broadcasts.
 - Players create, edit, move and delete their own tokens, roll dice and submit their own initiative. The campaign DM controls maps, settings, combat progression and token reassignment.
 - Private dice reach only the roller and campaign DM. Filter private data on the server: DM notes stay private after reassignment, and DM-controlled token HP is visible only to its reassigned owner and the DM.
 - DMs can use shared presets; only the creator edits/deletes them. Validate media references and ownership.

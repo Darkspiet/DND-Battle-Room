@@ -3174,3 +3174,9 @@ a.icon-button {
 .player-token-controls { position: absolute; top: 12px; left: 12px; z-index: 6; max-height: 65%; overflow: auto; width: min(270px, calc(100% - 24px)); pointer-events: none; }
 .player-token-controls > summary { width: fit-content; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 5px; cursor: pointer; pointer-events: auto; }
 .player-token-controls[open] { background: var(--surface); border: 1px solid var(--line); padding: 10px; pointer-events: auto; }
+
+.dm-invitations { padding: 1.25rem; margin-bottom: 1.5rem; border: 1px solid var(--border, #34403c); border-radius: 12px; }
+.dm-invitations input { min-width: 0; width: 100%; }
+
+.dm-invitations summary { cursor: pointer; font-weight: 600; }
+.dm-invitations[open] summary { margin-bottom: 1rem; }

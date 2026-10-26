@@ -8,6 +8,13 @@
       "when": 1793019122979,
       "tag": "0000_v2_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793041620131,
+      "tag": "0001_dm_invitations",
+      "breakpoints": true
     }
   ]
 }

@@ -47,6 +47,7 @@ class ConfigurationTests(unittest.TestCase):
                 config.create(values)
 
     def test_proxy_mode_is_literal_and_defaults_to_caddy(self):
+        self.assertEqual(config.create(self.settings())['DM_SIGNUP_MODE'], 'invite')
         self.assertEqual(config.create(self.settings())['INSTALL_PROXY_MODE'], 'caddy')
         self.assertEqual(config.create(self.settings(), 'external')['INSTALL_PROXY_MODE'], 'external')
         with self.assertRaises(ValueError):

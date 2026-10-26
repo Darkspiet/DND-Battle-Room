@@ -1,5 +1,5 @@
 import { users } from "../../db/schema";
-import { signUpDM } from "../../lib/server/auth";
+import { bootstrapDM } from "../../scripts/bootstrap-dm.mjs";
 import { db, pool } from "../../lib/server/db";
 
 export default async function globalSetup() {
@@ -10,6 +10,6 @@ export default async function globalSetup() {
   if (!password || password.length < 12) throw new Error("E2E_ADMIN_PASSWORD with at least 12 characters is required.");
 
   await db.delete(users);
-  await signUpDM({ username: "e2e-admin", displayName: "E2E Dungeon Master", password, color: "#b83c52" });
+  await bootstrapDM(pool, { username: "e2e-admin", name: "E2E Dungeon Master", password });
   await pool.end();
 }

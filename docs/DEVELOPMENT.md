@@ -7,10 +7,18 @@ Create a local database owned by a dedicated login, then run:
 ```bash
 npm ci
 npm run db:apply
-npm run dev
 ```
 
-Open http://127.0.0.1:3000 and sign up as a regular DM. SQL migrations live in `db/migrations`; the typed Drizzle schema is `db/schema.ts`. Review generated SQL before using it. `db:apply` and `db:migrate` use the same ordered migration runner and serialize migration attempts with a PostgreSQL advisory lock.
+Before starting the app for the first time, bootstrap a regular DM locally (the password is read silently, never passed in command arguments):
+
+```bash
+read -r -p 'First DM username: ' dm_username
+read -r -s -p 'First DM password: ' dm_password; echo
+printf '%s\0%s\0%s\0' "$dm_username" "$dm_password" "$dm_username" | node scripts/bootstrap-dm.mjs
+unset dm_password
+```
+
+Run `npm run dev`, then open http://127.0.0.1:3000 and sign in. Generate invitations on the dashboard for additional DMs. `DM_SIGNUP_MODE=invite` is the default; `open` explicitly enables public signup. Existing databases need `npm run db:apply` before starting the updated app to add the invitation table. SQL migrations live in `db/migrations`; the typed Drizzle schema is `db/schema.ts`. Review generated SQL before using it. `db:apply` and `db:migrate` use the same ordered migration runner and serialize migration attempts with a PostgreSQL advisory lock.
 
 ## Verification
 
@@ -42,7 +50,7 @@ shellcheck install.sh scripts/install-production.sh
 
 `E2E_ADMIN_PASSWORD` is a legacy fixture variable name: the fixture creates a **regular DM**, with no administrator privileges or authentication bypass. Playwright starts the real custom server on **3100**, with PostgreSQL and Socket.IO. Production uses 3000. Run typecheck, the full browser suite, then the production build in that order. To exercise production transport, set `PLAYWRIGHT_SERVER_COMMAND='node server.mjs'` and rerun the browser suite after building.
 
-The browser suite covers campaign worlds, desktop/mobile battle interaction, drag commits, build undo, portrait/landscape grid detection and zoom calibration, initiative, audio, public signup, literal special-character credentials, privacy, ownership, deduplication and socket-session revocation. Unit tests cover pure geometry, scene commands, initiative, ranges and private-network checks. Installer tests cover literal JSON configuration, safe extraction, credential hashing, bootstrap retries and missing/unavailable PostgreSQL.
+The browser suite covers campaign worlds, desktop/mobile battle interaction, drag commits, build undo, portrait/landscape grid detection and zoom calibration, initiative, audio, invited signup, literal special-character credentials, privacy, ownership, deduplication and socket-session revocation. Unit tests cover pure geometry, scene commands, initiative, ranges and private-network checks. Installer tests cover literal JSON configuration, safe extraction, credential hashing, bootstrap retries and missing/unavailable PostgreSQL.
 
 ## Modules
 
@@ -54,6 +62,6 @@ For contribution rules and permission boundaries, see the short [project ruleboo
 
 ## Release verification
 
-Before publishing a release, test the installer on fresh Ubuntu 24.04 x86-64 and ARM64 servers with public DNS and Caddy HTTPS. Verify first-DM login, public signup, player invitations, two-browser synchronization, reboot persistence and backup restoration. Also test reuse of an existing PostgreSQL cluster and Node/Caddy installation, shared-site preservation, existing-proxy mode, uninstall cancellation, edited-resource refusal and data-preserving reinstall. Exercise interrupted installation/retries, occupied ports, failed downloads and certificate failures. Local browser/build checks alone do not cover these deployment cases.
+Before publishing a release, test the installer on fresh Ubuntu 24.04 x86-64 and ARM64 servers with public DNS and Caddy HTTPS. Verify first-DM login, single-use DM invitations, optional open signup, player invitations, two-browser synchronization, reboot persistence and backup restoration. Also test reuse of an existing PostgreSQL cluster and Node/Caddy installation, shared-site preservation, existing-proxy mode, uninstall cancellation, edited-resource refusal and data-preserving reinstall. Exercise interrupted installation/retries, occupied ports, failed downloads and certificate failures. Local browser/build checks alone do not cover these deployment cases.
 
 The current campaign schema requires a fresh database; there is no automatic migration from the earlier simple-room app. Complete final review before publishing a tag, release or repository visibility change.

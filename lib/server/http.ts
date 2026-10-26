@@ -2,11 +2,8 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { DomainError } from "../domain/sceneReducer";
 
-export class HttpError extends Error {
-  constructor(public status: number, public code: string, message: string) {
-    super(message);
-  }
-}
+import { HttpError } from "./httpError";
+export { HttpError } from "./httpError";
 
 export function apiError(error: unknown, fallback = "The request could not be completed.") {
   if (error instanceof HttpError) {

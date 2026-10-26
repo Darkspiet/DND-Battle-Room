@@ -13,7 +13,7 @@ DND Battle Room is a self-hosted tabletop for running encounters together in you
 
 ## Playing together
 
-1. Sign up as a DM, create a campaign and prepare its locations and encounters.
+1. Sign in as a DM (or register with a code from an existing DM), create a campaign and prepare its locations and encounters.
 2. Share the campaign invitation or its eight-character code. Players choose a guest name and character.
 3. Send players to an encounter, assign their tokens and run the battle together. Players control their own tokens; the DM controls the battlefield and combat progression.
 
@@ -43,7 +43,7 @@ Local-archive mode still downloads operating-system packages and npm dependencie
 
 The opening menu offers **install/resume/reinstall**, **uninstall while keeping data**, or exit. Choose Caddy-managed HTTPS or an existing proxy/tunnel, then the installer asks for the website name, domain, first DM username/display name/password, and PostgreSQL database name/user/password. Password entry is hidden and confirmed; database credentials can be generated. It shows a summary with secrets omitted before changing the system.
 
-Open your chosen HTTPS URL and use **DM sign in** with the initial account. It is a regular DM account. Other DMs can sign up publicly; players use invitations. There is no application administrator role.
+Open your chosen HTTPS URL and use **DM sign in** with the initial account. It is a regular DM account. Existing DMs generate single-use account invitations from their dashboard. Players use campaign invitations. Operators can enable public DM signup in configuration. There is no application administrator role.
 
 An existing PostgreSQL server can be reused, but a new install needs an unused database name and dedicated username; existing names are never overwritten or reset.
 

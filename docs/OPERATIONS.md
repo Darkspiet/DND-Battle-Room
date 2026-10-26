@@ -34,7 +34,9 @@ Modified units/sites or symlinked installation paths stop removal for manual ins
 
 ## Accounts
 
-The initial account is an ordinary DM. Public DM signup remains available. Passwords require 12–128 characters; spaces and passphrases are accepted. Usernames use 3–32 lowercase letters, digits, dots, underscores or hyphens. A guest clearing browser data must rejoin; the DM reassigns tokens using the ownership control. A matching guest name grants no authority.
+The initial account is an ordinary DM. DM signup requires an invitation by default. Any signed-in DM can select **Generate DM invitation** on the dashboard and share the code privately. It expires after 72 hours and creates one regular DM account. Codes are stored only as hashes and cannot be retrieved later; at most 20 unused codes per issuer are allowed. Player campaign codes are separate and do not create DM accounts.
+
+Set `"DM_SIGNUP_MODE": "invite"` in `/etc/dnd-battle-room/config.json` to require invitations (also the default when absent). To allow public DM registration, explicitly set `"DM_SIGNUP_MODE": "open"`, then restart `dnd-battle-room`. Other values keep invitations required. Existing accounts continue working when the setting changes. Passwords require 12–128 characters; spaces and passphrases are accepted. Usernames use 3–32 lowercase letters, digits, dots, underscores or hyphens. A guest clearing browser data must rejoin; the DM reassigns tokens using the ownership control. A matching guest name grants no authority.
 
 A host operator can generate a one-use password-reset code, valid for one hour, without an application administrator:
 

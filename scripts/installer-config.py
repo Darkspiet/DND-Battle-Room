@@ -34,7 +34,7 @@ def create(values, proxy_mode='caddy'):
         raise ValueError('Proxy mode must be caddy or external.')
     config = dict(zip(KEYS, values))
     config['INSTALL_PROXY_MODE'] = proxy_mode
-    config.update(NODE_ENV='production', HOSTNAME='127.0.0.1', PORT='3000', TRUST_PROXY='loopback',
+    config.update(DM_SIGNUP_MODE='invite', NODE_ENV='production', HOSTNAME='127.0.0.1', PORT='3000', TRUST_PROXY='loopback',
                   APP_URL='https://' + config['INSTALL_DOMAIN'],
                   ASSET_DIR='/var/lib/dnd-battle-room/assets',
                   DATABASE_URL='postgresql://{}:{}@127.0.0.1:5432/{}'.format(
