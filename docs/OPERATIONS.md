@@ -2,7 +2,7 @@
 
 ## Service and configuration
 
-The standard installer places the app at `/opt/dnd-battle-room`, Node.js 24 at `/opt/dnd-battle-room-node`, configuration at `/etc/dnd-battle-room/config.json`, and uploaded media at `/var/lib/dnd-battle-room/assets`. The `dnd-battle-room` system user runs one systemd service. PostgreSQL and the app listen on loopback; Caddy exposes HTTPS on 80/443 and proxies all routes, including Socket.IO, to `127.0.0.1:3000`.
+The standard installer places the app at `/opt/dnd-battle-room`, Node.js 24 at `/opt/dnd-battle-room-node`, configuration at `/etc/dnd-battle-room/config.json`, and uploaded media at `/var/lib/dnd-battle-room/assets`. The `dnd-battle-room` system user runs one systemd service. The app connects to PostgreSQL over loopback and normally binds `127.0.0.1:3000`. Existing PostgreSQL listen settings are preserved. Caddy-managed mode exposes HTTPS on 80/443 and proxies all routes, including Socket.IO, to the app.
 
 Configuration is protected JSON, never shell code. Do not `source` it. `DND_CONFIG_FILE` loads runtime strings; installer-only keys are excluded from the application environment. Set `SITE_NAME`, `APP_URL` (the exact HTTPS origin), `DATABASE_URL`, `HOSTNAME`, `PORT` and `ASSET_DIR`. The legacy `APP_ORIGIN` name is accepted when `APP_URL` is absent. Opaque session digests need no shared session secret. HTTPS origins enable Secure, HttpOnly session cookies.
 
@@ -15,6 +15,22 @@ curl -fsS http://127.0.0.1:3000/api/health
 ```
 
 `/api/health/live` checks the HTTP process; `/api/health` and `/api/health/ready` check PostgreSQL. Failed startup does not fall back to local files. Avoid sharing raw configuration or diagnostic output containing secrets.
+
+## Existing dependencies and uninstall
+
+The opening installer menu offers install/resume/reinstall, uninstall, and exit. `bash install.sh --install` skips that menu. Existing local PostgreSQL 16+ on port 5432 is reused through its `postgres` system account; unrelated databases and roles are untouched. A new installation creates its own unused database/role. Unsupported older clusters must be upgraded manually. System packages already installed are not deliberately reinstalled/upgraded. A trusted root-managed Node.js 24/npm under `/usr` is reused through private runtime links; otherwise an isolated Node 24 runtime is downloaded without changing system Node.
+
+Caddy mode reuses the normal `/etc/caddy/Caddyfile` service, backs up that file under protected configuration and adds a marked import for `/etc/caddy/dnd-battle-room.caddy`. It validates the combined configuration before applying it. Other websites are retained. Edited blocks, duplicate domains and custom Caddy service/config layouts require manual review or existing-proxy mode.
+
+For nginx, a custom Caddy service or a tunnel, choose **existing reverse proxy**. The installer leaves proxy packages/configuration and ports 80/443 alone; configure HTTP/WebSocket routing to this app before its public HTTPS check. The default origin is loopback. A connector on another machine needs an explicit LAN `HOSTNAME` and appropriate firewall rules in the protected configuration, followed by an app restart; it cannot reach `127.0.0.1` remotely.
+
+```bash
+bash install.sh --uninstall
+```
+
+Uninstall requires typing `UNINSTALL`. It removes only the app source/private runtime, its verified systemd unit and its unchanged managed Caddy site. PostgreSQL databases/roles, uploaded media, protected configuration, the service user and shared packages are retained. Configuration and ownership records remain available for reinstalling a reviewed compatible release, which preserves saved credentials and skips account bootstrap. This is not a database migration tool.
+
+Modified units/sites or symlinked installation paths stop removal for manual inspection. Uploads stored inside the application/runtime directory must be moved outside it and `ASSET_DIR` updated before uninstalling. Legacy installers that owned the whole Caddyfile leave that file in place with a manual-removal message. There is no automatic data purge or shared-package removal.
 
 ## Accounts
 
@@ -49,7 +65,7 @@ Use a new empty backup directory for every backup; the example paths are placeho
 
 Keep the original backup immutable. Create a separate empty database owned by the intended application role, and use `pg_restore --no-owner --no-privileges --role=APP_ROLE --dbname=RESTORE_DB database.dump` as PostgreSQL's local operator. Restore media into a new empty asset directory, preserving the service user's ownership. Prepare a protected JSON config referencing that database and media directory; do not execute the backup configuration as shell code. Start an isolated copy with that configuration and verify accounts, campaigns, private rolls, images, world maps and audio before switching the service over.
 
-Do not run the installer against a populated PostgreSQL server or overwrite the current database to test a backup. The restored campaign app uses a different schema from the earlier simple-room app. There is no automatic data migration between them.
+Reuse of a populated PostgreSQL server is supported, but choose a separate unused application database; never overwrite the current database to test a backup. The restored campaign app uses a different schema from the earlier simple-room app. There is no automatic data migration between them.
 
 ## Manual updates
 
@@ -58,12 +74,12 @@ Do not run the installer against a populated PostgreSQL server or overwrite the 
 3. Stop the app. Apply only reviewed migrations to the intended database with `node --import ./scripts/load-config.mjs scripts/apply-db-schema.mjs`; retain the backup. Switch the service's app directory only after the build and migration succeed.
 4. Restart and check local readiness, public HTTPS, login and two-browser synchronization. For rollback, restore the matching code/database/media/configuration set into separate paths and switch back.
 
-The installer is for fresh installation and recovery of its own same-version interrupted setup, not an updater. It refuses unrelated services, databases or proxy configuration. Reusing a stage marker after manually replacing source is unsupported.
+The installer supports new application installations alongside compatible dependencies, same-archive interrupted retries and data-preserving reinstall after its uninstall operation. It never adopts an unrelated populated database or resets its credentials. Review migrations before reinstalling another release. Reusing a stage marker after manually replacing source is unsupported.
 
 ## Troubleshooting
 
 - **Release download 404:** private/unpublished tags cannot use the anonymous public command. Use the matching trusted source ZIP and `bash install.sh --local-archive /absolute/archive.zip`.
-- **Port or PostgreSQL conflict:** use a fresh server or inspect the named service. Back up existing data; never delete it simply to bypass preflight.
+- **Port or PostgreSQL conflict:** use unused application database/role names. An unrelated listener on port 3000 must be moved or stopped by its owner. For another proxy on 80/443, choose existing-proxy mode. Keep backups and never delete unrelated data to bypass preflight.
 - **Certificate failure:** verify A/AAAA records, inbound 80/443 and router forwarding; inspect Caddy logs. A Cloudflare Tunnel test adapter is a different deployment path and does not prove Caddy certificate issuance.
 - **Live updates fail:** proxy `/socket.io` and its WebSocket upgrades to the same custom Node server. Do not replace `node server.mjs` with `next start`. Confirm `APP_URL` exactly matches the browser origin.
 - **Paused edits:** restore database/connectivity and wait for reconnect/reload. Do not keep editing stale state or switch to browser-only storage.

@@ -4,6 +4,8 @@ import json
 import os
 import re
 import sys
+import tempfile
+import stat
 sys.stdout.reconfigure(encoding="utf-8")
 from urllib.parse import quote
 
@@ -26,9 +28,12 @@ def validate(values):
     if len(password) < 16:
         raise ValueError('Database passwords must contain at least 16 characters.')
 
-def create(values):
+def create(values, proxy_mode='caddy'):
     validate(values)
+    if proxy_mode not in ('caddy', 'external'):
+        raise ValueError('Proxy mode must be caddy or external.')
     config = dict(zip(KEYS, values))
+    config['INSTALL_PROXY_MODE'] = proxy_mode
     config.update(NODE_ENV='production', HOSTNAME='127.0.0.1', PORT='3000', TRUST_PROXY='loopback',
                   APP_URL='https://' + config['INSTALL_DOMAIN'],
                   ASSET_DIR='/var/lib/dnd-battle-room/assets',
@@ -37,13 +42,32 @@ def create(values):
                       quote(config['INSTALL_DB_NAME'], safe='')))
     return config
 
+
+def set_proxy(path, config, proxy_mode):
+    if proxy_mode not in ('caddy', 'external') or os.path.islink(path):
+        raise ValueError('Invalid proxy mode or symlinked configuration.')
+    config['INSTALL_PROXY_MODE'] = proxy_mode
+    previous = os.stat(path)
+    fd, temporary = tempfile.mkstemp(prefix='.config-', dir=os.path.dirname(os.path.abspath(path)))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as target:
+            json.dump(config, target, ensure_ascii=False, indent=2)
+            target.flush()
+            os.fsync(target.fileno())
+        if hasattr(os, 'chown'):
+            os.chown(temporary, previous.st_uid, previous.st_gid)
+        os.chmod(temporary, stat.S_IMODE(previous.st_mode))
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
 def main():
     mode = sys.argv[1]
     if mode == 'create':
         values = sys.stdin.buffer.read().decode().split('\0')
         if values[-1] == '': values.pop()
         if len(values) != len(KEYS): raise ValueError('Incomplete configuration.')
-        config = create(values)
+        config = create(values, sys.argv[3] if len(sys.argv) > 3 else 'caddy')
         destination = sys.argv[2]
         fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w', encoding='utf-8') as target: json.dump(config, target, ensure_ascii=False, indent=2)
@@ -57,6 +81,8 @@ def main():
             password = config['INSTALL_DB_PASSWORD'].replace("'", "''")
             print('SET standard_conforming_strings = on;')
             print('CREATE ROLE "{}" LOGIN PASSWORD \'{}\';'.format(config['INSTALL_DB_USER'], password))
+        elif mode == 'set-proxy':
+            set_proxy(sys.argv[2], config, sys.argv[3])
         else: raise ValueError('Unknown operation.')
 
 if __name__ == '__main__':

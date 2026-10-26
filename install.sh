@@ -8,25 +8,36 @@ NODE_DIR=/opt/dnd-battle-room-node
 CONFIG_DIR=/etc/dnd-battle-room
 CONFIG_FILE=$CONFIG_DIR/config.json
 SERVICE=dnd-battle-room
+CADDY_CONFIG=/etc/caddy/Caddyfile
+CADDY_SITE=/etc/caddy/dnd-battle-room.caddy
 STAGE=preflight
 WORK=
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 cleanup() { if [[ -n "$WORK" && "$WORK" == /tmp/dnd-install.* ]]; then rm -rf -- "$WORK"; fi; }
 trap cleanup EXIT
-trap 'printf "Installation stopped during %s. Fix the issue and rerun this same version. Existing data and credentials are preserved.\n" "$STAGE" >&2' ERR
+trap 'printf "Operation stopped during %s. Inspect the error and retry; existing data and credentials are preserved.\n" "$STAGE" >&2' ERR
 
 usage() {
   printf '%s\n' \
-    'Usage: bash install.sh [--local-archive PATH]' \
+    'Usage: bash install.sh [--install | --uninstall] [--local-archive PATH]' \
     '' \
     '  --local-archive PATH  Install source from a local ZIP or tar archive instead' \
     '                        of downloading the tagged GitHub release.' \
+    '  --install            Install/resume without showing the action menu.' \
+    '  --uninstall          Remove the application; keep database, uploads,' \
+    '                        protected configuration and shared dependencies.' \
     '  -h, --help            Show this help.'
 }
 
 LOCAL_ARCHIVE=
+ACTION=menu
 while (( $# > 0 )); do
   case "$1" in
+    --install|--uninstall)
+      [[ "$ACTION" == menu ]] || fail 'Choose only one action.'
+      ACTION=${1#--}
+      shift
+      ;;
     --local-archive)
       (( $# >= 2 )) || fail '--local-archive requires a path.'
       [[ -z "$LOCAL_ARCHIVE" ]] || fail '--local-archive may only be specified once.'
@@ -49,13 +60,14 @@ while (( $# > 0 )); do
       ;;
   esac
 done
+[[ "$ACTION" != uninstall || -z "$LOCAL_ARCHIVE" ]] || fail '--uninstall does not need a source archive.'
+if (( EUID == 0 )); then export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; fi
 
 [[ -r /etc/os-release ]] || fail 'Ubuntu 24.04 is required.'
 # shellcheck disable=SC1091
 . /etc/os-release
 [[ "$ID" == ubuntu && "$VERSION_ID" == 24.04 ]] || fail 'Only Ubuntu 24.04 is supported.'
 case "$(uname -m)" in x86_64) NODE_ARCH=x64 ;; aarch64|arm64) NODE_ARCH=arm64 ;; *) fail 'Only x86-64 and ARM64 are supported.' ;; esac
-command -v curl >/dev/null || fail 'Install curl first: sudo apt-get update && sudo apt-get install -y curl'
 command -v python3 >/dev/null || fail 'Install python3 first: sudo apt-get install -y python3'
 if [[ -n "$LOCAL_ARCHIVE" ]]; then
   [[ -f "$LOCAL_ARCHIVE" && -r "$LOCAL_ARCHIVE" ]] || fail "Local release archive is not a readable file: $LOCAL_ARCHIVE"
@@ -65,19 +77,18 @@ if (( EUID != 0 )); then
   command -v sudo >/dev/null || fail 'Run as root or install sudo.'
   sudo -v
   installer=$(mktemp /tmp/dnd-installer.XXXXXXXX.sh)
-  if [[ -n "$LOCAL_ARCHIVE" ]]; then
-    [[ -r "${BASH_SOURCE[0]}" ]] || fail 'Run local-archive mode from a readable install.sh file.'
+  if [[ -f "${BASH_SOURCE[0]}" && -r "${BASH_SOURCE[0]}" ]]; then
     cp -- "${BASH_SOURCE[0]}" "$installer"
   else
+    command -v curl >/dev/null || fail 'Run from a saved install.sh file, or install curl first.'
     curl -fsSL --retry 3 "https://raw.githubusercontent.com/$REPOSITORY/$RELEASE_VERSION/install.sh" -o "$installer"
   fi
   chmod 700 "$installer"
   result=0
-  if [[ -n "$LOCAL_ARCHIVE" ]]; then
-    sudo bash "$installer" --local-archive "$LOCAL_ARCHIVE" || result=$?
-  else
-    sudo bash "$installer" || result=$?
-  fi
+  root_arguments=()
+  if [[ "$ACTION" != menu ]]; then root_arguments+=("--$ACTION"); fi
+  if [[ -n "$LOCAL_ARCHIVE" ]]; then root_arguments+=(--local-archive "$LOCAL_ARCHIVE"); fi
+  sudo bash "$installer" "${root_arguments[@]}" || result=$?
   rm -f -- "$installer"
   exit "$result"
 fi
@@ -105,14 +116,184 @@ secret() {
   done
 }
 random_secret() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
-postgres_run() { (cd /; runuser -u postgres -- "$@"); }
+postgres_run() { (cd /; runuser -u postgres -- env -i PATH=/usr/bin:/bin PGHOST=/var/run/postgresql PGPORT=5432 PGDATABASE=postgres "$@"); }
 done_stage() { [[ -f "$CONFIG_DIR/$1.done" ]]; }
 mark() { touch "$CONFIG_DIR/$1.done"; }
 
+# BEGIN LIFECYCLE HELPERS
+trusted_system_tool() {
+  local target
+  target=$(readlink -f "$1") || return 1
+  [[ "$target" == /usr/* ]] || return 1
+  while [[ "$target" != / ]]; do
+    [[ "$(stat -c %u "$target")" == 0 ]] || return 1
+    (( (8#$(stat -c %a "$target") & 8#022) == 0 )) || return 1
+    target=$(dirname -- "$target")
+  done
+}
+
+dependency_packages() {
+  local package
+  for package in ca-certificates curl xz-utils; do
+    if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then printf '%s\n' "$package"; fi
+  done
+  if ! command -v pg_lsclusters >/dev/null || ! pg_lsclusters --no-header | grep -q .; then printf '%s\n' postgresql postgresql-contrib; fi
+}
+
+reuse_node_runtime() {
+  local system_node system_npm
+  system_node=$(command -v node || true)
+  system_npm=$(command -v npm || true)
+  [[ -n "$system_node" && -n "$system_npm" ]] || return 1
+  trusted_system_tool "$system_node" && trusted_system_tool "$system_npm" || return 1
+  [[ "$("$system_node" -p 'process.versions.node.split(".")[0]')" == 24 ]] || return 1
+  install -d -m 755 "$NODE_DIR/bin"
+  ln -sfn -- "$(readlink -f "$system_node")" "$NODE_DIR/bin/node"
+  ln -sfn -- "$(readlink -f "$system_npm")" "$NODE_DIR/bin/npm"
+}
+
+require_owned_install() {
+  local target
+  for target in "$CONFIG_DIR" "$CONFIG_FILE" "$CONFIG_DIR/installer-version"; do
+    [[ -e "$target" && ! -L "$target" ]] || fail "Missing or symlinked installation metadata: $target"
+    [[ "$(stat -c %u "$target")" == 0 ]] || fail "Installation metadata must be root-owned: $target"
+    (( (8#$(stat -c %a "$target") & 8#022) == 0 )) || fail "Installation metadata is writable by another account: $target"
+  done
+  for target in "$CONFIG_DIR/"*.sha256 "$CONFIG_DIR/"*.done; do
+    [[ -e "$target" || -L "$target" ]] || continue
+    [[ -f "$target" && ! -L "$target" && "$(stat -c %u "$target")" == 0 ]] || fail 'Installer ownership markers must be regular root-owned files.'
+    (( (8#$(stat -c %a "$target") & 8#022) == 0 )) || fail 'Installer ownership markers must not be writable by another account.'
+  done
+}
+
+rewrite_caddy_config() {
+  python3 - "$1" "$2" "$CADDY_SITE" "$3" <<'PY_CADDY'
+import pathlib
+import sys
+
+source, destination, site, action = sys.argv[1:]
+begin, end = '# BEGIN DND BATTLE ROOM', '# END DND BATTLE ROOM'
+text = pathlib.Path(source).read_text() if pathlib.Path(source).exists() else ''
+if text.count(begin) != text.count(end) or text.count(begin) > 1:
+    raise SystemExit('Caddy contains an incomplete or duplicate Battle Room import block; inspect it manually.')
+if begin in text:
+    start = text.index(begin)
+    finish = text.index(end) + len(end)
+    block = text[start:finish]
+    expected = f'{begin}\nimport {site}\n{end}'
+    if block != expected:
+        raise SystemExit('The Battle Room import block was edited; inspect it manually.')
+    if finish < len(text) and text[finish] == '\n': finish += 1
+    text = text[:start] + text[finish:]
+if action == 'add':
+    text = text.rstrip('\n') + f'\n{begin}\nimport {site}\n{end}\n'
+elif action != 'remove':
+    raise SystemExit('Invalid Caddy configuration action.')
+pathlib.Path(destination).write_text(text)
+PY_CADDY
+}
+
+rollback_caddy_site() {
+  if [[ -f "$WORK/site.previous" ]]; then
+    install -m 644 "$WORK/site.previous" "$CADDY_SITE"
+  else
+    rm -f -- "$CADDY_SITE" "$CONFIG_DIR/caddy-site.sha256" "$CONFIG_DIR/proxy_site_started.done"
+  fi
+}
+
+write_caddy_config() {
+  local mode=644 owner=0 group=0
+  if [[ -f "$CADDY_CONFIG" ]]; then
+    mode=$(command stat -c %a "$CADDY_CONFIG")
+    owner=$(command stat -c %u "$CADDY_CONFIG")
+    group=$(command stat -c %g "$CADDY_CONFIG")
+  fi
+  install -m "$mode" -o "$owner" -g "$group" "$1" "$CADDY_CONFIG"
+}
+
+remove_caddy_site() {
+  [[ -f "$CONFIG_DIR/caddy-site.sha256" ]] || return 0
+  [[ ! -L "$CADDY_CONFIG" && ! -L "$CADDY_SITE" ]] || fail 'Caddy configuration is symlinked; remove the Battle Room site manually.'
+  sha256sum --check --status "$CONFIG_DIR/caddy-site.sha256" || fail 'Battle Room Caddy site was changed; inspect it before uninstalling.'
+  rewrite_caddy_config "$CADDY_CONFIG" "$WORK/Caddyfile.remove" remove
+  caddy validate --config "$WORK/Caddyfile.remove" --adapter caddyfile
+  cp -- "$CADDY_CONFIG" "$WORK/Caddyfile.previous"
+  write_caddy_config "$WORK/Caddyfile.remove"
+  if systemctl is-active --quiet caddy && ! systemctl reload caddy; then
+    write_caddy_config "$WORK/Caddyfile.previous"
+    fail 'Caddy rejected the change. Its previous configuration was restored; no application files were removed.'
+  fi
+  rm -f -- "$CADDY_SITE" "$CONFIG_DIR/caddy-site.sha256" "$CONFIG_DIR/proxy_site_started.done"
+}
+
+uninstall_app() {
+  STAGE=uninstall
+  require_owned_install
+  # These fixed paths are the only directories this operation may remove.
+  [[ "$APP_DIR" == /opt/dnd-battle-room && "$NODE_DIR" == /opt/dnd-battle-room-node ]] || fail 'Unexpected application paths; refusing uninstall.'
+  [[ ! -L "$APP_DIR" && ! -L "$NODE_DIR" ]] || fail 'Application/runtime path is a symlink; inspect it manually.'
+  command -v findmnt >/dev/null || fail 'findmnt is required to check for mounted data before uninstalling.'
+  local mounted mounts
+  mounts=$(findmnt -rn -o TARGET) || fail 'Cannot inspect mounted data; uninstall was not started.'
+  while IFS= read -r mounted; do
+    case "$mounted" in
+      "$APP_DIR"|"$APP_DIR"/*|"$NODE_DIR"|"$NODE_DIR"/*) fail 'Mounted data exists inside the application/runtime directory. Unmount it before uninstalling; no files were removed.' ;;
+    esac
+  done <<< "$mounts"
+  python3 - "$CONFIG_FILE" "$APP_DIR" "$NODE_DIR" <<'PY_UNINSTALL'
+import json
+import pathlib
+import sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text())
+app, runtime = (pathlib.Path(value).resolve() for value in sys.argv[2:])
+media = pathlib.Path(config.get('ASSET_DIR', '/var/lib/dnd-battle-room/assets'))
+media = (app / media).resolve() if not media.is_absolute() else media.resolve()
+if any(media == target or target in media.parents for target in (app, runtime)):
+    raise SystemExit('Uploads are inside the application/runtime directory. Move them outside it and update ASSET_DIR before uninstalling.')
+PY_UNINSTALL
+  if [[ -e /etc/systemd/system/dnd-battle-room.service ]]; then
+    [[ -f "$CONFIG_DIR/service.sha256" ]] || fail 'Service ownership is not recorded; inspect the unit manually.'
+    sha256sum --check --status "$CONFIG_DIR/service.sha256" || fail 'Service unit was edited; inspect it before uninstalling.'
+  fi
+  printf 'Remove: %s, %s and the Battle Room service/proxy site.\n' "$APP_DIR" "$NODE_DIR"
+  printf 'Keep: PostgreSQL databases/roles, uploaded media, %s, the service user, and system packages.\n' "$CONFIG_DIR"
+  local answer
+  read -r -u 3 -p 'Type UNINSTALL to continue: ' answer
+  [[ "$answer" == UNINSTALL ]] || fail 'Cancelled.'
+  WORK=$(mktemp -d /tmp/dnd-install.XXXXXXXX)
+  chmod 755 "$WORK"
+  remove_caddy_site
+  # Older installers owned the entire Caddyfile: never guess how to remove it.
+  if [[ -f "$CONFIG_DIR/caddy.sha256" && ! -f "$CONFIG_DIR/caddy-site.sha256" ]]; then
+    printf 'Legacy Caddy configuration retained at %s; remove its Battle Room site manually.\n' "$CADDY_CONFIG"
+  fi
+  if [[ -e /etc/systemd/system/dnd-battle-room.service ]]; then
+    systemctl disable --now "$SERVICE"
+    rm -f -- /etc/systemd/system/dnd-battle-room.service
+    systemctl daemon-reload
+  fi
+  rm -rf --one-file-system -- "$APP_DIR" "$NODE_DIR"
+  rm -f -- "$CONFIG_DIR/source.done" "$CONFIG_DIR/node.done" "$CONFIG_DIR/dependencies.done" "$CONFIG_DIR/build.done" "$CONFIG_DIR/complete.done" "$CONFIG_DIR/service.sha256" "$CONFIG_DIR/caddy.sha256"
+  mark uninstalled
+  printf 'Application removed. Campaigns, credentials, uploads and shared dependencies were preserved.\nReinstall uses the retained configuration and never resets accounts.\n'
+}
+# END LIFECYCLE HELPERS
+
+if [[ "$ACTION" == menu ]]; then
+  printf 'DND Battle Room\n  1) Install / resume / reinstall\n  2) Uninstall application (keep campaigns and uploads)\n  3) Exit\n'
+  read -r -u 3 -p 'Choose [1]: ' action_choice
+  case "${action_choice:-1}" in 1) ACTION=install ;; 2) ACTION=uninstall ;; 3) exit 0 ;; *) fail 'Choose 1, 2 or 3.' ;; esac
+fi
+if [[ "$ACTION" == uninstall ]]; then uninstall_app; exit 0; fi
+command -v curl >/dev/null || fail 'Install curl first: sudo apt-get update && sudo apt-get install -y curl'
+
 RESUME=false
+REINSTALL=false
 if [[ -e "$CONFIG_DIR" ]]; then
-  [[ -f "$CONFIG_DIR/installer-version" && "$(cat "$CONFIG_DIR/installer-version")" == "$RELEASE_VERSION" ]] || fail "Unrecognized installation at $CONFIG_DIR; no files were changed."
-  [[ -f "$CONFIG_FILE" ]] || fail "Incomplete configuration at $CONFIG_DIR. Inspect it before retrying; do not delete database data."
+  require_owned_install
+  if done_stage uninstalled; then REINSTALL=true;
+  else [[ "$(cat "$CONFIG_DIR/installer-version")" == "$RELEASE_VERSION" ]] || fail "Use the original installer to resume this installation, or uninstall while keeping data before reinstalling a reviewed compatible release."
+  fi
   RESUME=true
   for component in service caddy; do
     if [[ -f "$CONFIG_DIR/$component.sha256" ]]; then
@@ -123,14 +304,35 @@ else
   [[ ! -e "$APP_DIR" && ! -e "$NODE_DIR" ]] || fail 'Application/runtime directory already exists; migration is not supported.'
   ! getent passwd "$SERVICE" >/dev/null || fail 'The service user already exists.'
   ! getent group "$SERVICE" >/dev/null || fail 'The service group already exists.'
-  [[ ! -e /etc/apt/sources.list.d/caddy-stable.list ]] || fail 'An existing Caddy package source was found; use a fresh server.'
-  [[ ! -e /etc/caddy/Caddyfile ]] || fail 'An existing Caddy configuration was found; use a fresh server.'
   ! systemctl cat "$SERVICE" >/dev/null 2>&1 || fail 'An existing application service was found.'
-  ! command -v psql >/dev/null || fail 'Existing PostgreSQL installation detected; use a fresh server.'
+fi
+PROXY_MODE=caddy
+if [[ "$RESUME" == true ]]; then
+  PROXY_MODE=$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get("INSTALL_PROXY_MODE","caddy"); assert v in ("caddy","external"); print(v)' "$CONFIG_FILE")
+fi
+if [[ "$RESUME" != true || "$REINSTALL" == true ]]; then
+  printf 'HTTPS proxy:\n  1) Install/reuse Caddy and add a Battle Room site\n  2) Use an existing reverse proxy/tunnel (configure routing yourself)\n'
+  proxy_default=1
+  if [[ "$PROXY_MODE" == external ]]; then proxy_default=2; fi
+  read -r -u 3 -p "Choose [$proxy_default]: " proxy_choice
+  case "${proxy_choice:-$proxy_default}" in 1) PROXY_MODE=caddy ;; 2) PROXY_MODE=external ;; *) fail 'Choose 1 or 2.' ;; esac
+fi
+if [[ "$PROXY_MODE" == caddy ]]; then
+  [[ ! -L "$CADDY_CONFIG" && ! -L "$CADDY_SITE" ]] || fail 'Symlinked Caddy configuration is unsupported; choose existing-proxy mode instead.'
+  if [[ "$RESUME" != true && -e "$CADDY_SITE" ]]; then fail 'A Battle Room Caddy site already exists; inspect it before installing.'; fi
+  if systemctl cat caddy >/dev/null 2>&1; then
+    systemctl show -p ExecStart --value caddy | grep -qE -- '--config[= ]+/etc/caddy/Caddyfile([[:space:];"]|$)' || fail 'Caddy uses a custom config path; choose existing-proxy mode instead.'
+  fi
 fi
 for port in 80 443 3000 5432; do
+  if [[ "$PROXY_MODE" == external && ( "$port" == 80 || "$port" == 443 ) ]]; then continue; fi
   if ss -H -ltn "sport = :$port" | grep -q .; then
-    if [[ "$RESUME" != true ]]; then fail "Port $port is already occupied; use a fresh server."; fi
+    if [[ "$port" == 5432 ]]; then
+      existing_pg_version=$(postgres_run psql -wX -Atqc 'show server_version_num' 2>/dev/null) || fail 'Port 5432 is occupied by an unavailable or unrelated database. Use a local PostgreSQL cluster accessible as the postgres system user.'
+      (( existing_pg_version >= 160000 )) || fail 'PostgreSQL 16 or newer is required. Back up and upgrade the existing cluster manually first.'
+      continue
+    fi
+    if [[ "$port" == 3000 && "$RESUME" != true ]]; then fail 'Port 3000 is already occupied. Stop or move that unrelated application first.'; fi
     # Only installer-owned service ports may be reused during a retry.
     case "$port" in
       80|443) owner=caddy ;;
@@ -150,7 +352,7 @@ for port in 80 443 3000 5432; do
   fi
 done
 printf 'DND Battle Room %s - Ubuntu 24.04 installer\n' "$RELEASE_VERSION"
-printf 'Before continuing: point your domain A/AAAA records to this machine, and allow inbound TCP 80/443.\nDNS, router forwarding and external firewall rules are your responsibility.\n'
+printf 'Before continuing: configure DNS and public HTTPS for your domain. Caddy mode requires inbound TCP 80/443.\nExisting-proxy mode requires routing the domain to this app yourself.\n'
 WORK=$(mktemp -d /tmp/dnd-install.XXXXXXXX)
 chmod 755 "$WORK"
 mkdir "$WORK/source"
@@ -287,7 +489,7 @@ else
 fi
 if [[ -n "$LOCAL_ARCHIVE" ]]; then release_hash=$(sha256sum "$LOCAL_ARCHIVE"); else release_hash=$(sha256sum "$WORK/release.tar.gz"); fi
 release_hash=${release_hash%% *}
-if [[ "$RESUME" == true ]]; then
+if [[ "$RESUME" == true && "$REINSTALL" != true ]]; then
   [[ -f "$CONFIG_DIR/release.sha256" && "$(cat "$CONFIG_DIR/release.sha256")" == "$release_hash" ]] || fail 'Retry requires the exact original archive from this installer. This is not an updater; keep existing data and use the documented manual update procedure.'
 fi
 HELPER=$WORK/source/scripts/installer-config.py
@@ -312,13 +514,19 @@ else
   choice=
   read -r -u 3 -p 'Generate a secure database password? [Y/n]: ' choice
   if [[ "$choice" == n || "$choice" == N ]]; then secret DB_PASSWORD 'Database password (at least 16 characters)'; else DB_PASSWORD=$(random_secret); fi
-  printf '%s\0' "$SITE_NAME" "$DOMAIN" "$DM_USERNAME" "$DM_NAME" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" | python3 "$HELPER" create "$WORK/config.json"
+  printf '%s\0' "$SITE_NAME" "$DOMAIN" "$DM_USERNAME" "$DM_NAME" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" | python3 "$HELPER" create "$WORK/config.json" "$PROXY_MODE"
 fi
 if ! done_stage bootstrap; then
   secret DM_PASSWORD 'First DM password (at least 12 characters)'
   (( ${#DM_PASSWORD} >= 12 )) || fail 'The first DM password needs at least 12 characters.'
 fi
-printf '\nWebsite: %s\nURL: https://%s\nFirst DM: %s (%s)\nDatabase: %s (user %s)\nApplication: %s\nSecrets omitted.\n' "$SITE_NAME" "$DOMAIN" "$DM_USERNAME" "$DM_NAME" "$DB_NAME" "$DB_USER" "$APP_DIR"
+if [[ "$RESUME" != true ]] && command -v psql >/dev/null && postgres_run psql -wX -Atqc 'select 1' >/dev/null 2>&1; then
+  existing=$(postgres_run psql -wX -Atqc "select count(*) from pg_roles where rolname = '$DB_USER'")
+  [[ "$existing" == 0 ]] || fail 'That PostgreSQL role already exists. Rerun and choose a new dedicated database username; its credentials were not changed.'
+  existing=$(postgres_run psql -wX -Atqc "select count(*) from pg_database where datname = '$DB_NAME'")
+  [[ "$existing" == 0 ]] || fail 'That database already exists. Rerun and choose a new database name; existing data was not changed.'
+fi
+printf '\nWebsite: %s\nURL: https://%s\nFirst DM: %s (%s)\nDatabase: %s (user %s)\nApplication: %s\nProxy: %s\nExisting system packages and unrelated databases/sites will be preserved.\nSecrets omitted.\n' "$SITE_NAME" "$DOMAIN" "$DM_USERNAME" "$DM_NAME" "$DB_NAME" "$DB_USER" "$APP_DIR" "$PROXY_MODE"
 confirm 'Install/resume these settings?'
 if [[ "$RESUME" != true ]]; then
   # Publish recovery configuration and ownership marker together.
@@ -328,12 +536,18 @@ if [[ "$RESUME" != true ]]; then
   printf '%s\n' "$release_hash" > "$config_staging/release.sha256"
   mv -T -- "$config_staging" "$CONFIG_DIR"
 fi
+if [[ "$REINSTALL" == true ]]; then
+  python3 "$HELPER" set-proxy "$CONFIG_FILE" "$PROXY_MODE"
+  printf '%s\n' "$RELEASE_VERSION" > "$CONFIG_DIR/installer-version"
+  printf '%s\n' "$release_hash" > "$CONFIG_DIR/release.sha256"
+  rm -f -- "$CONFIG_DIR/uninstalled.done"
+fi
 STAGE='system dependencies'
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl xz-utils postgresql postgresql-contrib debian-keyring debian-archive-keyring apt-transport-https
+mapfile -t packages < <(dependency_packages)
+if (( ${#packages[@]} )); then apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"; fi
 systemctl enable --now postgresql
-listen_addresses=$(postgres_run psql -Atqc 'show listen_addresses')
-[[ "$listen_addresses" == localhost || "$listen_addresses" == 127.0.0.1 ]] || fail 'PostgreSQL is not configured for loopback-only access.'
+pg_version=$(postgres_run psql -wX -Atqc 'show server_version_num') || fail 'Start an existing local PostgreSQL cluster on port 5432, accessible as the postgres system user.'
+(( pg_version >= 160000 )) || fail 'PostgreSQL 16 or newer is required. Upgrade an older cluster manually after backing it up.'
 if ! getent passwd "$SERVICE" >/dev/null; then useradd --system --user-group --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$SERVICE"; fi
 chown root:"$SERVICE" "$CONFIG_DIR" "$CONFIG_FILE"
 chmod 750 "$CONFIG_DIR"
@@ -346,6 +560,9 @@ if ! done_stage source; then
 fi
 STAGE='Node.js 24 LTS'
 if ! done_stage node; then
+  if reuse_node_runtime; then
+    printf 'Reusing installed Node.js 24 and npm; their system files will not be replaced.\n'
+  else
   curl -fsSL --retry 3 https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt -o "$WORK/SHASUMS256.txt"
   archive=$(awk -v arch="$NODE_ARCH" '$2 ~ "^node-v24\\.[0-9]+\\.[0-9]+-linux-" arch "\\.tar\\.xz$" {print $2}' "$WORK/SHASUMS256.txt")
   [[ "$archive" =~ ^node-v24\.[0-9]+\.[0-9]+-linux-(x64|arm64)\.tar\.xz$ ]] || fail 'Could not resolve Node.js 24 archive.'
@@ -353,6 +570,7 @@ if ! done_stage node; then
   (cd "$WORK"; grep -F "  $archive" SHASUMS256.txt | sha256sum --check --status)
   install -d -m 755 "$NODE_DIR"
   tar -xJf "$WORK/$archive" --strip-components=1 -C "$NODE_DIR"
+  fi
   mark node
 fi
 export PATH="$NODE_DIR/bin:$PATH"
@@ -386,6 +604,8 @@ owner=$(postgres_run psql -Atqc "select pg_get_userbyid(datdba) from pg_database
 [[ "$owner" == "$DB_USER" ]] || fail 'Database ownership differs from installer configuration.'
 # Probe credentials without printing connection strings or database errors.
 app_run node --import ./scripts/load-config.mjs --input-type=module -e 'import {Pool} from "pg"; const p=new Pool({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:5000}); try{await p.query("select 1")}catch{console.error("Database connection failed; check saved configuration.");process.exitCode=1}finally{await p.end()}'
+legacy_schema=$(postgres_run psql -wX -d "$DB_NAME" -Atqc "select to_regclass('public.dm_profiles') is not null")
+[[ "$legacy_schema" == f ]] || fail 'The retained database uses the earlier simple-room schema. Automatic migration is unsupported; keep its backup and migrate manually or select a separate empty database.'
 app_run node --import ./scripts/load-config.mjs scripts/apply-db-schema.mjs
 if ! done_stage bootstrap; then
   printf '%s\0' "$DM_USERNAME" "$DM_PASSWORD" "$DM_NAME" | app_run node scripts/bootstrap-dm.mjs
@@ -394,7 +614,7 @@ if ! done_stage bootstrap; then
 fi
 STAGE='production build'
 if ! done_stage build; then
-  app_run node --import ./scripts/load-config.mjs "$NODE_DIR/lib/node_modules/npm/bin/npm-cli.js" run build
+app_run node --import ./scripts/load-config.mjs "$(readlink -f "$(command -v npm)")" run build
   mark build
 fi
 [[ -f .next/BUILD_ID ]] || fail 'Completed production build is missing; inspect the app directory.'
@@ -412,7 +632,9 @@ for ((attempt=0; attempt<30; attempt++)); do
 done
 [[ "$ready" == true ]] || fail 'Application did not become ready. Inspect journalctl -u dnd-battle-room.'
 STAGE='Caddy HTTPS'
-if ! done_stage caddy_repository; then
+if [[ "$PROXY_MODE" == caddy ]]; then
+if ! command -v caddy >/dev/null; then
+if ! done_stage caddy_repository && [[ ! -e /etc/apt/sources.list.d/caddy-stable.list ]]; then
   curl -fsSL --retry 3 https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o "$WORK/caddy.asc"
   install -m 644 "$WORK/caddy.asc" /usr/share/keyrings/caddy-stable-archive-keyring.asc
   printf '%s\n' 'deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main' > /etc/apt/sources.list.d/caddy-stable.list
@@ -420,13 +642,36 @@ if ! done_stage caddy_repository; then
 fi
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
-printf '%s {\n    reverse_proxy 127.0.0.1:3000\n}\n' "$DOMAIN" > "$WORK/Caddyfile"
-chmod 644 "$WORK/Caddyfile"
-caddy validate --config "$WORK/Caddyfile" --adapter caddyfile
-install -m 644 "$WORK/Caddyfile" /etc/caddy/Caddyfile
-sha256sum /etc/caddy/Caddyfile > "$CONFIG_DIR/caddy.sha256"
+fi
+[[ ! -L "$CADDY_CONFIG" && ! -L "$CADDY_SITE" ]] || fail 'Caddy configuration became symlinked; inspect it manually.'
+install -d -m 755 /etc/caddy
+printf '%s {\n    reverse_proxy 127.0.0.1:3000\n}\n' "$DOMAIN" > "$WORK/site.caddy"
+if [[ -e "$CADDY_SITE" ]]; then
+  done_stage proxy_site_started || fail 'An unrelated file occupies the Battle Room Caddy site path.'
+  cmp -s "$CADDY_SITE" "$WORK/site.caddy" || fail 'The Battle Room Caddy site was edited; inspect it manually.'
+  cp -- "$CADDY_SITE" "$WORK/site.previous"
+fi
+if [[ ! -f "$CONFIG_DIR/Caddyfile.before-install" && -f "$CADDY_CONFIG" ]]; then install -m 600 "$CADDY_CONFIG" "$CONFIG_DIR/Caddyfile.before-install"; fi
+if [[ -f "$CADDY_CONFIG" ]]; then cp -- "$CADDY_CONFIG" "$WORK/Caddyfile.previous"; else touch "$WORK/Caddyfile.previous"; fi
+mark proxy_site_started
+install -m 644 "$WORK/site.caddy" "$CADDY_SITE"
+sha256sum "$CADDY_SITE" > "$CONFIG_DIR/caddy-site.sha256"
+rewrite_caddy_config "$CADDY_CONFIG" "$WORK/Caddyfile" add
+if ! caddy validate --config "$WORK/Caddyfile" --adapter caddyfile; then
+  rollback_caddy_site
+  fail 'Combined Caddy configuration is invalid. Existing Caddyfile was not changed. Inspect duplicate domains/imports, or use existing-proxy mode on a new install.'
+fi
+write_caddy_config "$WORK/Caddyfile"
 systemctl enable --now caddy
-systemctl reload caddy
+if ! systemctl reload caddy; then
+  write_caddy_config "$WORK/Caddyfile.previous"
+  rollback_caddy_site
+  fail 'Caddy reload failed; the previous Caddyfile was restored. Inspect journalctl -u caddy before retrying.'
+fi
+else
+  printf 'Existing-proxy mode: configure https://%s to proxy HTTP and WebSocket traffic to 127.0.0.1:3000 on this server.\n' "$DOMAIN"
+  read -r -u 3 -p 'Press Enter after configuring the route to verify public HTTPS. '
+fi
 STAGE='public HTTPS verification'
 ready=false
 for ((attempt=0; attempt<30; attempt++)); do

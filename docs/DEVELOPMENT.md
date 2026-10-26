@@ -35,6 +35,7 @@ npm run test:installer
 node --test tests/postgres/*.test.mjs
 python3 tests/installer/config.test.py
 python3 tests/installer/archive.test.py
+python3 tests/installer/lifecycle.test.py
 bash -n install.sh scripts/install-production.sh
 shellcheck install.sh scripts/install-production.sh
 ```
@@ -53,6 +54,6 @@ For contribution rules and permission boundaries, see the short [project ruleboo
 
 ## Release verification
 
-Before publishing a release, test the installer on fresh Ubuntu 24.04 x86-64 and ARM64 servers with public DNS and Caddy HTTPS. Verify first-DM login, public signup, player invitations, two-browser synchronization, reboot persistence and backup restoration. Exercise interrupted installation/retries, occupied ports, failed downloads and certificate failures. Local browser/build checks alone do not cover these deployment cases.
+Before publishing a release, test the installer on fresh Ubuntu 24.04 x86-64 and ARM64 servers with public DNS and Caddy HTTPS. Verify first-DM login, public signup, player invitations, two-browser synchronization, reboot persistence and backup restoration. Also test reuse of an existing PostgreSQL cluster and Node/Caddy installation, shared-site preservation, existing-proxy mode, uninstall cancellation, edited-resource refusal and data-preserving reinstall. Exercise interrupted installation/retries, occupied ports, failed downloads and certificate failures. Local browser/build checks alone do not cover these deployment cases.
 
 The current campaign schema requires a fresh database; there is no automatic migration from the earlier simple-room app. Complete final review before publishing a tag, release or repository visibility change.

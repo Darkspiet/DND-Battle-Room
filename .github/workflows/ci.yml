@@ -47,6 +47,7 @@ jobs:
           shellcheck install.sh scripts/install-production.sh
           python3 tests/installer/config.test.py
           python3 tests/installer/archive.test.py
+          python3 tests/installer/lifecycle.test.py
           npm run test:installer
           python3 scripts/audit-release.py
       - run: npm run lint

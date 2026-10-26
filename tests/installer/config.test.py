@@ -46,4 +46,25 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(index=index, invalid=invalid), self.assertRaises(ValueError):
                 config.create(values)
 
+    def test_proxy_mode_is_literal_and_defaults_to_caddy(self):
+        self.assertEqual(config.create(self.settings())['INSTALL_PROXY_MODE'], 'caddy')
+        self.assertEqual(config.create(self.settings(), 'external')['INSTALL_PROXY_MODE'], 'external')
+        with self.assertRaises(ValueError):
+            config.create(self.settings(), 'external; reboot')
+
+    def test_reinstall_changes_only_proxy_mode_without_echoing_secrets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'config.json'
+            original = config.create(self.settings())
+            path.write_text(json.dumps(original), encoding='utf-8')
+            changed = subprocess.run([sys.executable, str(HELPER), 'set-proxy', str(path), 'external'], capture_output=True)
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            self.assertEqual(changed.stdout, b'')
+            expected = {**original, 'INSTALL_PROXY_MODE': 'external'}
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')), expected)
+            rejected = subprocess.run([sys.executable, str(HELPER), 'set-proxy', str(path), 'bad; command'], capture_output=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertNotIn(original['INSTALL_DB_PASSWORD'].encode(), rejected.stderr)
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')), expected)
+
 if __name__ == '__main__': unittest.main()

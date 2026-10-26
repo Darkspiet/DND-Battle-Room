@@ -21,9 +21,9 @@ Private rolls are visible only to their roller and the campaign DM. DM token not
 
 ## Install on your server
 
-The installer supports **fresh Ubuntu 24.04 servers on x86-64 or ARM64**, with sudo/root access. It installs Node.js 24, local PostgreSQL, one application service and Caddy. No separate panel, daemon or container is needed.
+The installer supports **Ubuntu 24.04 servers on x86-64 or ARM64**, with sudo/root access. It installs missing dependencies and reuses a compatible Node.js 24, local PostgreSQL 16+ and Caddy installation. Existing unrelated databases and websites are preserved. No separate panel, daemon or container is needed.
 
-Before starting, own a public domain or subdomain, point its A/AAAA records at the server, and allow inbound TCP **80 and 443** through the firewall/router. Remove stale AAAA records if IPv6 cannot reach the server. Automatic HTTPS requires working public DNS and connectivity. The standard installer does not configure Cloudflare Tunnel or migrate an existing deployment.
+Own a public domain or subdomain. For **Caddy-managed HTTPS**, point its A/AAAA records at the server and allow inbound TCP **80 and 443** through the firewall/router; remove stale AAAA records if IPv6 cannot reach it. For an **existing reverse proxy or Cloudflare Tunnel**, keep that service’s DNS/HTTPS setup and configure its route to Battle Room. The installer does not automatically migrate an older database schema.
 
 **Release availability:** this restored source is under verification. The command below becomes usable when the reviewed `v1.0.0` tag is published in the public repository; it does not work against an unpublished/private tag.
 
@@ -39,9 +39,13 @@ bash install.sh --local-archive /absolute/path/DND-Battle-Room-1.0.0-rc.1.zip
 
 Local-archive mode still downloads operating-system packages and npm dependencies. Use only a source archive you trust; installation builds and runs its code.
 
-The installer asks for the website name, domain, first DM username/display name/password, and PostgreSQL database name/user/password. Password entry is hidden and confirmed; database credentials can be generated. It shows a summary with secrets omitted before changing the system.
+The opening menu offers **install/resume/reinstall**, **uninstall while keeping data**, or exit. Choose Caddy-managed HTTPS or an existing proxy/tunnel, then the installer asks for the website name, domain, first DM username/display name/password, and PostgreSQL database name/user/password. Password entry is hidden and confirmed; database credentials can be generated. It shows a summary with secrets omitted before changing the system.
 
 Open your chosen HTTPS URL and use **DM sign in** with the initial account. It is a regular DM account. Other DMs can sign up publicly; players use invitations. There is no application administrator role.
+
+An existing PostgreSQL server can be reused, but a new install needs an unused database name and dedicated username; existing names are never overwritten or reset.
+
+To remove the app, run `bash install.sh --uninstall` (or choose it from the menu). This keeps the database, credentials, uploaded media, protected configuration and shared packages. Reinstalling after uninstall uses the saved settings and accounts; review schema compatibility first. `--install` skips the opening action menu.
 
 A retry of the same installer preserves completed stages, credentials, accounts and saved data. For conflicts, stop and follow the diagnostic message; do not delete PostgreSQL data to force installation.
 
