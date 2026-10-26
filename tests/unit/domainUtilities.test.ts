@@ -3,7 +3,7 @@ import { effectiveAudioPosition } from "../../lib/domain/audio";
 import { effectDirectionDegrees, effectPixelSize, lineEffectPolygon, snapToGrid } from "../../lib/domain/buildGeometry";
 import { createDefaultSceneState } from "../../lib/domain/defaults";
 import { resolveGridMetrics } from "../../lib/domain/grid";
-import { calibrationFromPoints } from "../../lib/domain/gridCalibration";
+import { calibrationFromPoints, normalizeCalibration } from "../../lib/domain/gridCalibration";
 import { parseByteRange } from "../../lib/domain/range";
 
 describe("byte ranges", () => {
@@ -23,7 +23,10 @@ describe("byte ranges", () => {
 
 describe("grid calibration", () => {
   it("resolves imported image offsets and grid spacing", () => {
-    const grid = { ...createDefaultSceneState().grid, calibration: { originX: 12, originY: 8, pixelsPerCell: 50, imageScale: 0.8, imageOffsetX: -4, imageOffsetY: 6 } };
+    const grid = {
+      ...createDefaultSceneState().grid,
+      calibration: { originX: 12, originY: 8, pixelsPerCell: 50, imageScale: 0.8, imageOffsetX: -4, imageOffsetY: 6 }
+    };
     const metrics = resolveGridMetrics(grid);
     expect(metrics.cell).toBe(40);
     expect(metrics.originX).toBeCloseTo(5.6);
@@ -50,38 +53,81 @@ describe("grid calibration", () => {
       rows: 8
     });
   });
+
+  it("does not average sideways click jitter into the cell spacing", () => {
+    expect(calibrationFromPoints({ x: 4, y: 7 }, { x: 74, y: 11 }, { width: 2240, height: 3360 }).pixelsPerCell).toBe(
+      70
+    );
+    expect(calibrationFromPoints({ x: 4, y: 7 }, { x: 8, y: 77 }, { width: 2240, height: 3360 }).pixelsPerCell).toBe(
+      70
+    );
+  });
+
+  it("calibrates a wide span and rejects ambiguous diagonals", () => {
+    expect(
+      calibrationFromPoints({ x: 70, y: 140 }, { x: 770, y: 141 }, { width: 2240, height: 3360 }, 10).pixelsPerCell
+    ).toBe(70);
+    expect(() => calibrationFromPoints({ x: 0, y: 0 }, { x: 140, y: 70 }, { width: 500, height: 500 })).toThrow(
+      /same row/
+    );
+    expect(() => calibrationFromPoints({ x: 0, y: 0 }, { x: 70, y: 0 }, { width: 500, height: 500 }, 0)).toThrow();
+  });
+
+  it("keeps the logical cell size and rendered map spacing identical", () => {
+    const aligned = normalizeCalibration({
+      originX: 8,
+      originY: 12,
+      pixelsPerCell: 70,
+      imageScale: 0.917,
+      imageOffsetX: 3,
+      imageOffsetY: 5
+    });
+    const metrics = resolveGridMetrics({ ...createDefaultSceneState().grid, ...aligned });
+    expect(metrics.cell).toBeCloseTo(aligned.cellSize, 10);
+    expect(metrics.originX).toBeCloseTo(3 + 8 * aligned.calibration.imageScale);
+  });
 });
 
 describe("audio synchronization", () => {
   it("advances playing tracks from the server timestamp", () => {
     const now = Date.parse("2026-07-22T12:00:10.000Z");
-    expect(effectiveAudioPosition({ campaignId: "campaign", playing: true, positionMs: 2_000, startedAt: "2026-07-22T12:00:05.000Z", loop: true, revision: 1 }, now)).toBe(7_000);
+    expect(
+      effectiveAudioPosition(
+        {
+          campaignId: "campaign",
+          playing: true,
+          positionMs: 2_000,
+          startedAt: "2026-07-22T12:00:05.000Z",
+          loop: true,
+          revision: 1
+        },
+        now
+      )
+    ).toBe(7_000);
   });
 
-describe("build geometry", () => {
-  const effect = {
-    id: "00000000-0000-4000-8000-000000000001",
-    shape: "line" as const,
-    label: "Lightning",
-    color: "#4d86e8",
-    opacity: 0.4,
-    origin: { x: 10, y: 20 },
-    target: { x: 40, y: 20 },
-    sizeFeet: 30,
-    widthFeet: 5
-  };
+  describe("build geometry", () => {
+    const effect = {
+      id: "00000000-0000-4000-8000-000000000001",
+      shape: "line" as const,
+      label: "Lightning",
+      color: "#4d86e8",
+      opacity: 0.4,
+      origin: { x: 10, y: 20 },
+      target: { x: 40, y: 20 },
+      sizeFeet: 30,
+      widthFeet: 5
+    };
 
-  it("snaps wall points against a calibrated origin", () => {
-    expect(snapToGrid({ x: 77, y: 93 }, { x: 5, y: 13 }, 40)).toEqual({ x: 85, y: 93 });
-  });
+    it("snaps wall points against a calibrated origin", () => {
+      expect(snapToGrid({ x: 77, y: 93 }, { x: 5, y: 13 }, 40)).toEqual({ x: 85, y: 93 });
+    });
 
-  it("converts feet to pixels and builds a directional line polygon", () => {
-    expect(effectPixelSize(effect, 50, 5)).toBe(300);
-    expect(effectDirectionDegrees(effect)).toBe(0);
-    const polygon = lineEffectPolygon(effect, 50, 5);
-    [10, 45, 10, -5, 310, -5, 310, 45].forEach((value, index) =>
-      expect(polygon[index]).toBeCloseTo(value)
-    );
+    it("converts feet to pixels and builds a directional line polygon", () => {
+      expect(effectPixelSize(effect, 50, 5)).toBe(300);
+      expect(effectDirectionDegrees(effect)).toBe(0);
+      const polygon = lineEffectPolygon(effect, 50, 5);
+      [10, 45, 10, -5, 310, -5, 310, 45].forEach((value, index) => expect(polygon[index]).toBeCloseTo(value));
+    });
   });
-});
 });

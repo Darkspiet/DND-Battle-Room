@@ -42,7 +42,7 @@ shellcheck install.sh scripts/install-production.sh
 
 `E2E_ADMIN_PASSWORD` is a legacy fixture variable name: the fixture creates a **regular DM**, with no administrator privileges or authentication bypass. Playwright starts the real custom server on **3100**, with PostgreSQL and Socket.IO. Production uses 3000. Run typecheck, the full browser suite, then the production build in that order. To exercise production transport, set `PLAYWRIGHT_SERVER_COMMAND='node server.mjs'` and rerun the browser suite after building.
 
-The browser suite covers campaign worlds, desktop/mobile battle interaction, drag commits, build undo, initiative, audio, public signup, literal special-character credentials, privacy, ownership, deduplication and socket-session revocation. Unit tests cover pure geometry, scene commands, initiative, ranges and private-network checks. Installer tests cover literal JSON configuration, safe extraction, credential hashing, bootstrap retries and missing/unavailable PostgreSQL.
+The browser suite covers campaign worlds, desktop/mobile battle interaction, drag commits, build undo, portrait/landscape grid detection and zoom calibration, initiative, audio, public signup, literal special-character credentials, privacy, ownership, deduplication and socket-session revocation. Unit tests cover pure geometry, scene commands, initiative, ranges and private-network checks. Installer tests cover literal JSON configuration, safe extraction, credential hashing, bootstrap retries and missing/unavailable PostgreSQL.
 
 ## Modules
 

@@ -2243,10 +2243,41 @@ a.icon-button {
 .calibration-image-wrap > img {
   display: block;
   height: auto;
-  max-height: 260px;
-  object-fit: contain;
   width: 100%;
 }
+
+.calibration-viewport {
+  max-height: 360px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.calibration-zoom-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+}
+
+.calibration-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 6px 10px;
+}
+
+.calibration-span {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  margin: 6px 10px;
+}
+
+.calibration-span input { width: 64px; }
+.calibration-advanced > summary { color: var(--muted); cursor: pointer; font-size: 12px; padding: 8px 0; }
+.calibration-advanced[open] > .calibration-grid { margin-top: 8px; }
 
 .calibration-line-overlay {
   inset: 0;

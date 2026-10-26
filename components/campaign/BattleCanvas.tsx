@@ -202,7 +202,7 @@ export function BattleCanvas({
   }
 
   return (
-    <section className={`battle-canvas battle-mode-${mode}`} aria-label={`${scene.name} battle map`}>
+    <section className={`battle-canvas battle-mode-${mode}`} aria-label={`${scene.name} battle map`} data-scene-version={scene.version}>
       <div className="battle-scroll" ref={scrollRef}>
         <BattleStage
           actor={actor}

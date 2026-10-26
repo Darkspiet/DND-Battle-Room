@@ -17,6 +17,8 @@ DND Battle Room is a self-hosted tabletop for running encounters together in you
 2. Share the campaign invitation or its eight-character code. Players choose a guest name and character.
 3. Send players to an encounter, assign their tokens and run the battle together. Players control their own tokens; the DM controls the battlefield and combat progression.
 
+For maps with a printed grid, **Build → Detect printed grid** proposes an alignment; review it and choose **Apply grid alignment**. Manual alignment supports up to 800% preview zoom, scrolling and selecting points several cells apart. A newly imported map starts without a second grid overlay.
+
 Private rolls are visible only to their roller and the campaign DM. DM token notes stay private, and DM-controlled token HP is hidden from players. Guest identity comes from a secure session, never a matching display name.
 
 ## Install on your server
