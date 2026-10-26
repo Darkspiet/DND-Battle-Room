@@ -1,6 +1,6 @@
 # DND Battle Room
 
-DND Battle Room is a self-hosted tabletop for running encounters together in your browser. Prepare a battlefield, invite players with a campaign code, and manage tokens, initiative and dice in one shared room. Connect encounters on a world map and set the mood with shared audio.
+DND Battle Room is pretty much says what it is, it is a self-hosted tabletop for running your sessio nand encounters online together with your group in your browser. U can Prepare a battlefield, invite players with a campaign code, and manage tokens, initiative and dice in one shared room. Connect encounters on a world map and set the mood with shared audio. The features were based on problems or ideas my Group came up with and also closely working with the DM of my Group. important to say is AI was used in the design of the outside of the battle room, but NO PICTURES were Generated with AI and no Art will be Gneerated with AI. 
 
 ![The DM battle workspace with a synthetic encounter](docs/images/battle-room.png)
 
