@@ -31,6 +31,7 @@ def create(values):
     config = dict(zip(KEYS, values))
     config.update(NODE_ENV='production', HOSTNAME='127.0.0.1', PORT='3000', TRUST_PROXY='loopback',
                   APP_URL='https://' + config['INSTALL_DOMAIN'],
+                  ASSET_DIR='/var/lib/dnd-battle-room/assets',
                   DATABASE_URL='postgresql://{}:{}@127.0.0.1:5432/{}'.format(
                       quote(config['INSTALL_DB_USER'], safe=''), quote(config['INSTALL_DB_PASSWORD'], safe=''),
                       quote(config['INSTALL_DB_NAME'], safe='')))

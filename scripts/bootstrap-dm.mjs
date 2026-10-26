@@ -1,5 +1,5 @@
 import './load-config.mjs';
-import { randomBytes } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { hashPassword, validateCredentials } from '../lib/authCredentials.mjs';
 
@@ -9,17 +9,17 @@ export async function bootstrapDM(pool, { username, password, name }) {
   const client = await pool.connect();
   try {
     await client.query('begin');
-    await client.query('lock table dm_profiles in exclusive mode');
-    const existing = await client.query('select username from dm_profiles');
+    await client.query('lock table users in exclusive mode');
+    const existing = await client.query('select username from users');
     if (existing.rowCount) {
       if (!existing.rows.some(row => row.username === username)) throw new Error('Database already has DM accounts; refusing to bootstrap another account.');
       await client.query('rollback');
       return false;
     }
     const credential = await hashPassword(password);
-    await client.query(`insert into dm_profiles (id, username, display_name, color, password_hash, password_salt)
+    await client.query(`insert into users (id, username, display_name, color, password_hash, role)
       values ($1, $2, $3, $4, $5, $6)`,
-    [`dm_${randomBytes(8).toString('hex')}`, username, name.trim() || username, '#b7394b', credential.hash, credential.salt]);
+    [randomUUID(), username, name.trim() || username, '#b7394b', `scrypt-v1:${credential.salt}:${credential.hash}`, 'dm']);
     await client.query('commit');
     return true;
   } catch (error) {

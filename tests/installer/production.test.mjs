@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
 for (const [name, database, expected] of [
-  ['missing database', undefined, 'DATABASE_URL is required in every runtime mode'],
+  ['missing database', undefined, 'DATABASE_URL is required'],
   ['unavailable database', 'postgresql://test:test@127.0.0.1:1/missing', 'PostgreSQL is unavailable']
 ]) {
   test(`production refuses ${name} before starting HTTP`, () => {

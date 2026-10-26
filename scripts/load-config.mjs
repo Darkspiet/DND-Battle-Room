@@ -1,4 +1,6 @@
+import nextEnv from "@next/env";
 import { readFileSync } from 'node:fs';
+if (!process.env.DND_CONFIG_FILE) nextEnv.loadEnvConfig(process.cwd(), process.env.NODE_ENV !== "production");
 // JSON avoids shell evaluation and dotenv/systemd escaping disagreements.
 if (process.env.DND_CONFIG_FILE) {
   let config;
@@ -9,3 +11,5 @@ if (process.env.DND_CONFIG_FILE) {
     if (!key.startsWith("INSTALL_")) process.env[key] = value;
   }
 }
+
+if (process.env.APP_URL) process.env.APP_ORIGIN = process.env.APP_URL;

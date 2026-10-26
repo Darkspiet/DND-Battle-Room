@@ -30,7 +30,9 @@ test('bootstrap uses a transaction and hashed credentials, and preserves an exis
   const inserted = calls.find(call => call.sql.startsWith('insert'));
   assert.equal(inserted.values[1], input.username);
   assert.notEqual(inserted.values[4], input.password);
-  assert.equal((await hashPassword(input.password, inserted.values[5])).hash, inserted.values[4]);
+  const [, salt, hash] = inserted.values[4].split(':');
+  assert.equal((await hashPassword(input.password, salt)).hash, hash);
+  assert.equal(inserted.values[5], 'dm');
   profiles.push({ username: 'another-dm' });
   assert.equal(await bootstrapDM(pool, input), false);
   assert.equal(calls.filter(call => call.sql.startsWith('insert')).length, 1);

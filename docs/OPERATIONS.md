@@ -1,63 +1,72 @@
-# Operating DND Battle Room
+# Operations
 
-Service management, recovery, backups and manual updates for an installer-managed server. For first installation, see [the README](../README.md#installation).
+## Service and configuration
 
-## Configuration and services
+The standard installer places the app at `/opt/dnd-battle-room`, Node.js 24 at `/opt/dnd-battle-room-node`, configuration at `/etc/dnd-battle-room/config.json`, and uploaded media at `/var/lib/dnd-battle-room/assets`. The `dnd-battle-room` system user runs one systemd service. PostgreSQL and the app listen on loopback; Caddy exposes HTTPS on 80/443 and proxies all routes, including Socket.IO, to `127.0.0.1:3000`.
 
-| Location | Purpose |
-| --- | --- |
-| `/opt/dnd-battle-room` | Application and build |
-| `/opt/dnd-battle-room-node` | Installer-managed Node.js 24 runtime |
-| `/etc/dnd-battle-room/config.json` | Root-managed JSON settings, readable by the service group |
-| `dnd-battle-room.service` | App running as the dedicated `dnd-battle-room` user |
-| `/etc/caddy/Caddyfile` | HTTPS proxy to `127.0.0.1:3000`, including `/ws` |
-
-The installer uses JSON rather than shell-sourcing secrets. Never run `source` on configuration. `DATABASE_URL`, `SITE_NAME`, `APP_URL`, and `TRUST_PROXY` are loaded on startup. `INSTALL_*` fields are reserved for retries and are not exported to the app. Sessions use opaque random tokens; only token digests are stored in PostgreSQL. There is no signing secret.
-
-Production, development and tests require a reachable PostgreSQL database with the schema applied. There is no JSON or Supabase backend. PostgreSQL is local-only; do not publish ports 3000 or 5432. Development/tests use **3100**.
+Configuration is protected JSON, never shell code. Do not `source` it. `DND_CONFIG_FILE` loads runtime strings; installer-only keys are excluded from the application environment. Set `SITE_NAME`, `APP_URL` (the exact HTTPS origin), `DATABASE_URL`, `HOSTNAME`, `PORT` and `ASSET_DIR`. The legacy `APP_ORIGIN` name is accepted when `APP_URL` is absent. Opaque session digests need no shared session secret. HTTPS origins enable Secure, HttpOnly session cookies.
 
 ```bash
-sudo systemctl status dnd-battle-room caddy postgresql
-sudo journalctl -u dnd-battle-room -u caddy -f
-curl --fail https://YOUR-DOMAIN/api/health
+sudo systemctl status dnd-battle-room --no-pager
+sudo systemctl restart dnd-battle-room
+sudo journalctl -u dnd-battle-room -n 100 --no-pager
+sudo systemctl status caddy postgresql --no-pager
+curl -fsS http://127.0.0.1:3000/api/health
 ```
 
-The health endpoint returns only `ok` or `unavailable`, without database details. To change the website name, edit `SITE_NAME` in the protected JSON file using `sudoedit`, then restart `dnd-battle-room`. Homepage/browser title changes apply without a rebuild. Keep `APP_URL`, the domain and the Caddy configuration consistent if changing a domain.
+`/api/health/live` checks the HTTP process; `/api/health` and `/api/health/ready` check PostgreSQL. Failed startup does not fall back to local files. Avoid sharing raw configuration or diagnostic output containing secrets.
 
-## Failed or interrupted installation
+## Accounts
 
-Rerun the **same v1.0.0 command**. Saved settings, database credentials and accounts are preserved. A partially completed first-DM step may ask you to re-enter the password; it will not change an existing account's password. The script does not automatically upgrade an existing completed installation to another version.
+The initial account is an ordinary DM. Public DM signup remains available. Passwords require 12–128 characters; spaces and passphrases are accepted. Usernames use 3–32 lowercase letters, digits, dots, underscores or hyphens. A guest clearing browser data must rejoin; the DM reassigns tokens using the ownership control. A matching guest name grants no authority.
 
-If HTTPS fails, inspect DNS (including stale AAAA records), firewall/port forwarding, and `journalctl -u caddy`. A failed public health check is not a successful installation. The configured services remain available for troubleshooting and retries; the installer never drops databases or removes accounts to recover.
-
-Unrecognized existing files/services stop installation. Retry checks also refuse to overwrite service/proxy files edited outside the installer. Do not delete PostgreSQL data or overwrite another site's proxy configuration to bypass a conflict. Keep protected configuration private; it contains the database password.
-
-## Backup and restore
-
-Before updates, back up both PostgreSQL and configuration to protected storage:
+A host operator can generate a one-use password-reset code, valid for one hour, without an application administrator:
 
 ```bash
-sudo install -d -m 700 /var/backups/dnd-battle-room
-sudo sh -c 'umask 077; runuser -u postgres -- pg_dump -Fc YOUR_DATABASE > /var/backups/dnd-battle-room/database.dump'
-sudo cp -a /etc/dnd-battle-room /var/backups/dnd-battle-room/config
-sudo cp -a /etc/caddy/Caddyfile /var/backups/dnd-battle-room/Caddyfile
+cd /opt/dnd-battle-room
+sudo -u dnd-battle-room env DND_CONFIG_FILE=/etc/dnd-battle-room/config.json /opt/dnd-battle-room-node/bin/node scripts/password-reset.mjs USERNAME
 ```
 
-Substitute your chosen database name. Copy backups off the server securely. Database credentials are required to recreate the role on a replacement host. To restore into an already provisioned, empty database owned by the same database user:
+Deliver that code privately to the account owner. They use **Reset** on the DM login page. Changing the password revokes existing DM sessions. Do not put passwords on command lines or save initial plaintext passwords.
+
+## Manual backup
+
+Back up **PostgreSQL, media and protected configuration together**. Store encrypted copies off-server and test restoration. Stop the service briefly so media references and database state remain consistent. The commands below use the installer's default database name; substitute the actual name from your configuration if you chose another.
 
 ```bash
 sudo systemctl stop dnd-battle-room
-sudo sh -c 'runuser -u postgres -- pg_restore --no-owner --role=YOUR_DB_USER --dbname=YOUR_DATABASE < /var/backups/dnd-battle-room/database.dump'
+sudo install -d -m 700 /var/backups/dnd-manual
+sudo sh -c 'umask 077; sudo -u postgres pg_dump --format=custom dnd_battle_room > /var/backups/dnd-manual/database.dump'
+sudo tar -czf /var/backups/dnd-manual/assets.tar.gz -C /var/lib/dnd-battle-room/assets .
+sudo cp /etc/dnd-battle-room/config.json /var/backups/dnd-manual/config.json
+sudo chmod 600 /var/backups/dnd-manual/*
 sudo systemctl start dnd-battle-room
 ```
 
-Do not restore blindly over existing tables; validate restoration on a separate server first. Accounts, sessions, room listings, library presets and complete encounters live in PostgreSQL. Maps, tokens, drawings, effects, initiative and dice history survive app restarts. Private data is included in database backups; protect backups like credentials.
+Use a new empty backup directory for every backup; the example paths are placeholders. Never reuse them to overwrite a needed backup. No timer, automatic retention deletion or unattended update is installed.
+
+## Restore into a separate empty installation
+
+Keep the original backup immutable. Create a separate empty database owned by the intended application role, and use `pg_restore --no-owner --no-privileges --role=APP_ROLE --dbname=RESTORE_DB database.dump` as PostgreSQL's local operator. Restore media into a new empty asset directory, preserving the service user's ownership. Prepare a protected JSON config referencing that database and media directory; do not execute the backup configuration as shell code. Start an isolated copy with that configuration and verify accounts, campaigns, private rolls, images, world maps and audio before switching the service over.
+
+Do not run the installer against a populated PostgreSQL server or overwrite the current database to test a backup. The restored campaign app uses a different schema from the earlier simple-room app. There is no automatic data migration between them.
 
 ## Manual updates
 
-There are no unattended updates. Read the target release notes, take backups, and download the reviewed tagged source to a separate staging directory. Preserve `/etc/dnd-battle-room` and the database. Run `npm ci`, `npm run typecheck`, `npm run test:e2e` on port 3100, then `npm run build` with Node 24. Test with an isolated database, not the live data.
+1. Read the target release notes and check schema compatibility. Back up the current code, database, media and configuration.
+2. Stage the reviewed source in a separate directory. With Node.js 24 run `npm ci`, the required checks, and the production build using its intended configuration.
+3. Stop the app. Apply only reviewed migrations to the intended database with `node --import ./scripts/load-config.mjs scripts/apply-db-schema.mjs`; retain the backup. Switch the service's app directory only after the build and migration succeed.
+4. Restart and check local readiness, public HTTPS, login and two-browser synchronization. For rollback, restore the matching code/database/media/configuration set into separate paths and switch back.
 
-Only after verification, stop the app, replace its source/build with the staged release owned by `dnd-battle-room`, apply any documented schema migration with the protected configuration loader, and restart it. Keep the old source/build and a matching database backup for rollback. Recheck `/api/health`, login and a two-browser room. Never use the fresh-install script as an upgrade/migration command.
+The installer is for fresh installation and recovery of its own same-version interrupted setup, not an updater. It refuses unrelated services, databases or proxy configuration. Reusing a stage marker after manually replacing source is unsupported.
 
+## Troubleshooting
 
-See [development and tests](DEVELOPMENT.md) for a separate local setup, and [release acceptance](RELEASE-v1.0.0.md) before publishing.
+- **Release download 404:** private/unpublished tags cannot use the anonymous public command. Use the matching trusted source ZIP and `bash install.sh --local-archive /absolute/archive.zip`.
+- **Port or PostgreSQL conflict:** use a fresh server or inspect the named service. Back up existing data; never delete it simply to bypass preflight.
+- **Certificate failure:** verify A/AAAA records, inbound 80/443 and router forwarding; inspect Caddy logs. A Cloudflare Tunnel test adapter is a different deployment path and does not prove Caddy certificate issuance.
+- **Live updates fail:** proxy `/socket.io` and its WebSocket upgrades to the same custom Node server. Do not replace `node server.mjs` with `next start`. Confirm `APP_URL` exactly matches the browser origin.
+- **Paused edits:** restore database/connectivity and wait for reconnect/reload. Do not keep editing stale state or switch to browser-only storage.
+- **Missing media:** check `ASSET_DIR`, disk space and service-user permissions. Backing up PostgreSQL alone does not include uploaded files.
+
+See [development and release verification](DEVELOPMENT.md) and [security](SECURITY.md).

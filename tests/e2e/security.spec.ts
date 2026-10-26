@@ -1,99 +1,93 @@
-import { test, expect } from '@playwright/test';
-import { signInAsDm } from './auth';
-
-test('DM reassigns a token without exposing private notes; failed saves pause and recover', async ({page, browser}) => {
-  await signInAsDm(page);
-  await page.goto('/dm/dashboard');
-  await page.getByRole('button', {name: 'Create room'}).click();
-  await expect(page).toHaveURL(/\/room\/[A-Z0-9]+$/);
-  const code=page.url().split('/').pop()!;
-  const roomPath='/api/rooms/'+code;
-  const context=await browser.newContext();
-  try {
-    const guest=await context.newPage();
-    // Hold hydration to reproduce slow CI: SSR inputs must not accept edits
-    // that the preference-loading effect would subsequently replace.
-    let releaseScripts!: () => void;
-    const hydrationGate=new Promise<void>(resolve=>{releaseScripts=resolve;});
-    await guest.route('**/*',async route=>{
-      if(route.request().resourceType()==='script')await hydrationGate;
-      await route.continue();
-    });
-    try {
-      await guest.goto(new URL('/join/'+code,page.url()).href,{waitUntil:'commit'});
-      await expect(guest.getByLabel('Player name')).toBeDisabled();
-    } finally {releaseScripts();}
-    await expect(guest.getByLabel('Player name')).toBeEnabled();
-    await guest.unrouteAll({behavior:'wait'});
-    await guest.getByLabel('Player name').fill('New owner');
-    const joinResponse=guest.waitForResponse(response=>new URL(response.url()).pathname===roomPath&&response.request().method()==='POST');
-    await guest.getByRole('button',{name:'Enter lobby'}).click();
-    const joined=await joinResponse;
-    expect(joined.ok()).toBeTruthy();
-    const {profile:member}=await joined.json();
-    expect(member.nickname).toBe('New owner');
-    await expect(guest.locator('.sync-badge.online')).toBeVisible();
-    const response=await page.request.post(roomPath+'/commands',{data:{id:crypto.randomUUID(),commands:[{type:'token.create',payload:{token:{id:'private-monster',name:'Private monster',hp:'Secret hit points',note:'Secret encounter note'}}}]}});
-    expect(response.ok()).toBeTruthy();
-    await expect(page.locator('.token')).toHaveCount(1);
-    await page.locator('.token').click();
-    await expect(page.getByLabel('HP / status')).toHaveValue('Secret hit points');
-    await guest.locator('.token').click();
-    await expect(guest.getByLabel('HP / status')).toHaveCount(0);
-    await expect(guest.getByLabel('Note',{exact:true})).toHaveValue('');
-    await page.getByLabel('Token owner').selectOption(member.id);
-    await expect(guest.getByLabel('HP / status')).toHaveValue('Secret hit points');
-    await expect(guest.getByLabel('HP / status')).toBeEnabled();
-    await expect(guest.getByLabel('Note',{exact:true})).toHaveValue('');
-    await page.screenshot({path:'test-results/screenshots/token-ownership-desktop.png',fullPage:true});
-    await page.setViewportSize({width:390,height:844});
-    await page.screenshot({path:'test-results/screenshots/token-ownership-mobile.png',fullPage:true});
-
-    await page.route('**/api/rooms/'+code+'/commands',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Database unavailable. Changes have not been saved.'})}));
-    await page.getByRole('button',{name:'Add token'}).click();
-    await expect(page.locator('.sync-warning')).toContainText('not been saved');
-    await expect(page.locator('.token')).toHaveCount(1);
-    await page.unroute('**/api/rooms/'+code+'/commands');
-    await expect(page.locator('.sync-warning')).toHaveCount(0);
-    await page.getByRole('button',{name:'Add token'}).click();
-    await expect(page.locator('.token')).toHaveCount(2);
-    await expect.poll(async()=> (await (await page.request.get(roomPath)).json()).tokens.length).toBe(2);
-  } finally { await context.close(); }
+import { expect, test, type APIRequestContext } from "@playwright/test";
+import { io, type Socket } from "socket.io-client";
+import { randomUUID } from "node:crypto";
+import type { DiceRollRecord, SceneRecord, SceneToken } from "../../lib/domain/types";
+const origin = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3100";
+const password = `A long ' \" $ # ü 🔥 passphrase`;
+async function socketFor(api: APIRequestContext) {
+  const cookie = (await api.storageState()).cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const socket = io(origin, { transports: ["websocket"], extraHeaders: { Origin: origin, Cookie: cookie } });
+  await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("connect_error", reject); });
+  return socket;
+}
+async function ack<T = { scene: SceneRecord; id: string }>(socket: Socket, event: string, input: unknown): Promise<T> {
+  const result: { ok: true; data: T } | { ok: false; error: { code: string } } = await socket.timeout(5000).emitWithAck(event, input);
+  if (!result.ok) throw new Error(result.error.code);
+  return result.data;
+}
+async function signup(api: APIRequestContext) {
+  const username = `dm-${randomUUID().slice(0, 12)}`;
+  const response = await api.post("/api/v1/auth/signup", { data: { username, password, displayName: "Security DM", color: "#b83c52" } });
+  expect(response.ok()).toBeTruthy();
+  expect((await response.json()).user.role).toBe("dm");
+  return username;
+}
+test("public signup, literal credentials, SQL and origin safety", async ({ request }) => {
+  const username = await signup(request);
+  expect((await request.post("/api/v1/auth/signin", { data: { username: `x' OR '1'='1`, password } })).status()).toBe(400);
+  expect((await request.post("/api/v1/auth/signin", { data: { username, password: `x' OR '1'='1` } })).ok()).toBe(false);
+  expect((await request.post("/api/v1/auth/signin", { data: { username, password } })).ok()).toBe(true);
+  expect((await request.post("/api/v1/campaigns", { headers: { Origin: "https://evil.example" }, data: { name: "Foreign origin" } })).status()).toBe(403);
+  expect((await request.post("/api/v1/auth/signup", { data: { username: "short-test", password: "short", displayName: "Short" } })).status()).toBe(400);
 });
 
-
-test('public signup, literal passphrase login and owner preset editing work', async ({page, browser}) => {
-  const username='ui-'+Date.now().toString(36);
-  const password="A literal ' ; $ passphrase";
-  await page.goto('/dm/login');
-  await page.getByRole('button',{name:'Sign up',exact:true}).click();
-  await expect(page.getByLabel('Password',{exact:true})).toHaveAttribute('minlength','12');
-  await page.getByLabel('Username',{exact:true}).fill(username);
-  await page.getByLabel('Display name',{exact:true}).fill('UI DM');
-  await page.getByLabel('Password',{exact:true}).fill(password);
-  await page.getByRole('button',{name:'Create DM profile'}).click();
-  await expect(page).toHaveURL(/\/dm\/dashboard$/);
-  const presetName='UI preset '+Date.now();
-  const form=page.locator('.library-command-card');
-  await form.getByLabel('Name',{exact:true}).fill(presetName);
-  await form.getByRole('button',{name:'Save shared token'}).click();
-  const edit=page.getByRole('button',{name:'Edit preset '+presetName,exact:true});
-  await expect(edit).toBeVisible();
-  await edit.click();
-  await form.getByLabel('Name',{exact:true}).fill(presetName+' updated');
-  await form.getByRole('button',{name:'Update preset'}).click();
-  await expect(page.getByRole('button',{name:'Edit preset '+presetName+' updated',exact:true})).toBeVisible();
-  const context=await browser.newContext();
+test("recipient privacy, guest authority, reassignment, deduplication and revocation", async ({ playwright, request }) => {
+  await signup(request);
+  const otherDM = await playwright.request.newContext({ baseURL: origin });
+  const guest = await playwright.request.newContext({ baseURL: origin });
+  const stranger = await playwright.request.newContext({ baseURL: origin });
+  const sockets: Socket[] = [];
   try {
-    const other=await context.newPage();await signInAsDm(other);await other.goto(new URL('/dm/dashboard',page.url()).href);
-    await expect(other.locator('.library-browser')).toContainText(presetName+' updated');
-    await expect(other.getByRole('button',{name:'Edit preset '+presetName+' updated',exact:true})).toHaveCount(0);
-  } finally {await context.close();}
-  await page.getByRole('button',{name:'Sign out',exact:true}).click();
-  await expect(page).toHaveURL(/\/$/);
-  await page.goto('/dm/login');
-  await page.getByLabel('Username',{exact:true}).fill(username);
-  await page.getByLabel('Password',{exact:true}).fill(password);
-  await page.getByRole('button',{name:'Sign in as DM'}).click();
-  await expect(page).toHaveURL(/\/dm\/dashboard$/);
+    await signup(otherDM);
+    const created = await (await request.post("/api/v1/campaigns", { data: { name: "Security encounter" } })).json();
+    const { campaign } = created;
+    expect((await otherDM.get(`/api/v1/campaigns/${campaign.id}`)).ok()).toBe(false);
+    const joined = await (await guest.post(`/api/v1/join/${campaign.joinCode}`, { data: { nickname: "Guest" } })).json();
+    const outsider = await (await stranger.post(`/api/v1/join/${campaign.joinCode}`, { data: { nickname: "Guest" } })).json();
+    expect(joined.player.id).not.toBe(outsider.player.id);
+    const dm = await socketFor(request); sockets.push(dm);
+    const guestSocket = await socketFor(guest); sockets.push(guestSocket);
+    const strangerSocket = await socketFor(stranger); sockets.push(strangerSocket);
+    await ack(dm, "campaign:watch", { campaignId: campaign.id });
+    await ack(dm, "players:set-destination", { campaignId: campaign.id, playerIds: [joined.player.id, outsider.player.id], destination: { kind: "scene", sceneId: created.scene.id } });
+    let { scene } = await ack<{ scene: SceneRecord }>(dm, "scene:join", { sceneId: created.scene.id });
+    await ack(guestSocket, "scene:join", { sceneId: scene.id });
+    await ack(strangerSocket, "scene:join", { sceneId: scene.id });
+    const token: SceneToken = { id: randomUUID(), name: "DM monster", icon: "M", kind: "monster", ownerId: null, color: "#b83c52", x: 1, y: 1, size: 1, hp: "Secret HP", note: "Secret DM note", conditions: [] };
+    const commandId = randomUUID();
+    const envelope = { commandId, sceneId: scene.id, baseVersion: scene.version, command: { type: "token.create", token } };
+    ({ scene } = await ack(dm, "scene:command", envelope));
+    const repeated = await ack(dm, "scene:command", envelope);
+    expect(repeated.scene.version).toBe(scene.version);
+    expect(scene.state.tokens.filter((t) => t.id === token.id)).toHaveLength(1);
+    const readGuest = async () => (await (await guest.get(`/api/v1/scenes/${scene.id}`)).json()).scene as SceneRecord;
+    expect(JSON.stringify(await readGuest())).not.toContain("Secret");
+    await expect(ack(guestSocket, "scene:command", { commandId: randomUUID(), sceneId: scene.id, baseVersion: scene.version, command: { type: "token.move", tokenId: token.id, x: 3, y: 3 } })).rejects.toThrow("FORBIDDEN");
+    ({ scene } = await ack(dm, "scene:command", { commandId: randomUUID(), sceneId: scene.id, baseVersion: scene.version, command: { type: "token.update", tokenId: token.id, patch: { ownerId: joined.player.id, ownerName: "Forged" } } }));
+    const reassigned = (await readGuest()).state.tokens.find((t) => t.id === token.id)!;
+    expect(reassigned.hp).toBe("Secret HP");
+    expect(reassigned.ownerName).toBe("Guest");
+    expect(JSON.stringify(reassigned)).not.toContain("Secret DM note");
+    const strangerScene = (await (await stranger.get(`/api/v1/scenes/${scene.id}`)).json()).scene;
+    expect(JSON.stringify(strangerScene)).not.toContain("Secret");
+    ({ scene } = await ack(dm, "scene:command", { commandId: randomUUID(), sceneId: scene.id, baseVersion: scene.version, command: { type: "token.update", tokenId: token.id, patch: { note: "Updated private DM note" } } }));
+    expect(JSON.stringify(await readGuest())).not.toContain("Updated private DM note");
+    const own = { ...token, id: randomUUID(), ownerId: joined.player.id, ownerName: "Guest", note: "My note", hp: "25" };
+    ({ scene } = await ack(guestSocket, "scene:command", { commandId: randomUUID(), sceneId: scene.id, baseVersion: scene.version, command: { type: "token.create", token: own } }));
+    ({ scene } = await ack(guestSocket, "scene:command", { commandId: randomUUID(), sceneId: scene.id, baseVersion: scene.version, command: { type: "token.update", tokenId: own.id, patch: { name: "Edited" } } }));
+    ({ scene } = await ack(guestSocket, "scene:command", { commandId: randomUUID(), sceneId: scene.id, baseVersion: scene.version, command: { type: "token.delete", tokenId: own.id } }));
+    const seenDM: DiceRollRecord[] = [], seenStranger: DiceRollRecord[] = [];
+    dm.on("dice:result", (roll) => seenDM.push(roll)); strangerSocket.on("dice:result", (roll) => seenStranger.push(roll));
+    const roll = await ack(guestSocket, "dice:roll", { campaignId: campaign.id, sceneId: scene.id, expression: "2d20+5", private: true });
+    await expect.poll(() => seenDM.length).toBe(1);
+    expect(seenDM[0].id).toBe(roll.id); expect(seenStranger).toHaveLength(0);
+    const reload = await ack(dm, "scene:join", { sceneId: scene.id });
+    expect(reload.scene.version).toBe(scene.version);
+    await request.delete("/api/v1/auth/session");
+    dm.emit("scene:join", { sceneId: scene.id });
+    await expect.poll(() => dm.connected).toBe(false);
+  } finally {
+    sockets.forEach((socket) => socket.disconnect());
+    await Promise.all([guest.dispose(), stranger.dispose(), otherDM.dispose()]);
+  }
 });

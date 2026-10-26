@@ -1,67 +1,58 @@
-# Developing DND Battle Room
+# Development
 
-## Code map
+Use Node.js 24 and PostgreSQL 16. Production, development and tests all require PostgreSQL; there is no JSON or browser-storage fallback. Copy `.env.example` to `.env.local`, replace its database credentials and keep it out of Git. For local work use `APP_URL=http://127.0.0.1:3000`, `HOSTNAME=127.0.0.1`, `PORT=3000` and `ASSET_DIR=.data/assets`.
 
-The browser, HTTP API and WebSocket endpoint still run as one app. This organization changes code ownership, not the deployment model.
-
-| Area | Responsibility |
-| --- | --- |
-| `components/Tabletop.tsx` | Page composition and switching between table, combat, build and library modes |
-| `components/tabletop/useRoomConnection.ts` | The single room connection: join, HTTP/WS synchronization, committed snapshots, command queue, previews and failure recovery |
-| `components/tabletop/useBoardInteraction.ts` | Board gestures, token dragging, build selections and undo |
-| `components/tabletop/useCombat.ts` | Initiative form state, combat actions and derived turn order |
-| `components/tabletop/useTokens.ts` | Token selection, draft/picture controls and token actions |
-| `components/tabletop/` views | Typed, focused controls and presentation; dice, library and background form state stays with its view |
-| `components/tabletop/geometry.ts` | Pure board/effect geometry without React state or transport |
-| `lib/backend.mjs` | Stable backend exports used by routes, WebSockets and integration tests |
-| `lib/server/` | Authentication/sessions, room persistence and shared-library operations |
-| `lib/roomEngine.mjs` | Central command validation, authorization and recipient privacy filtering |
-
-Views send actions through the one connection hook. Do not create another socket, polling loop, persistence queue or local-success fallback inside a control. The server remains the permission authority. Backend modules import their dependencies directly; the facade is for callers, avoiding circular imports.
-
-Form views stay mounted while their mode is hidden, returning no markup, so switching modes preserves unfinished inputs. Keep hooks unconditional and keep helper logic out of page composition.
-
-## Local setup
-
-Install Node.js 24 and PostgreSQL 16 (Ubuntu 24.04's default). Create a development role/database using PostgreSQL's interactive tools. Never reuse production credentials for development:
+Create a local database owned by a dedicated login, then run:
 
 ```bash
-sudo -u postgres createuser --pwprompt dnd_dev
-sudo -u postgres createdb --owner=dnd_dev dnd_development
 npm ci
-cp .env.example .env.local
-# Edit DATABASE_URL, APP_URL=http://127.0.0.1:3100 and other settings.
 npm run db:apply
-npm run dev -- --hostname 127.0.0.1 --port 3100
+npm run dev
 ```
 
-URL-encode special characters in the database username/password when manually assembling `DATABASE_URL`. The installer does this automatically. The database role needs schema/table creation permissions in its own database; it does not need PostgreSQL superuser privileges.
+Open http://127.0.0.1:3000 and sign up as a regular DM. SQL migrations live in `db/migrations`; the typed Drizzle schema is `db/schema.ts`. Review generated SQL before using it. `db:apply` and `db:migrate` use the same ordered migration runner and serialize migration attempts with a PostgreSQL advisory lock.
 
-Create a **separate disposable test database**, owned by a test-only role. Export `TEST_DATABASE_URL` explicitly in the test shell; the database name must contain `test`. Playwright ignores development database settings and refuses to run without this URL. Example (replace the password locally):
+## Verification
+
+Create a separate disposable database whose name contains `_test`. Never point Playwright at a development or production database: global setup deletes test users and their associated fixtures. Use a test role allowed to create databases/roles for provisioning tests; never grant those privileges to the application service role.
+
+On Bash, configure the test process (PowerShell users can set the same values with `$env:NAME='value'`):
 
 ```bash
-export TEST_DATABASE_URL='postgresql://dnd_test:REPLACE_PASSWORD@127.0.0.1:5432/dnd_test'
-DATABASE_URL="$TEST_DATABASE_URL" node scripts/apply-db-schema.mjs
+export DATABASE_URL='postgresql://test_user:your-test-password@127.0.0.1:5432/dnd_battle_room_test'
+export TEST_DATABASE_URL="$DATABASE_URL"
+export APP_URL='http://127.0.0.1:3100'
+export ASSET_DIR='/tmp/dnd-test-assets'
+export E2E_ADMIN_PASSWORD='a-local-test-only-passphrase'
+npm run db:apply
+npx playwright install chromium
 npm run typecheck
 npm run test:e2e
 npm run build
-npm run test:security
-RUN_TRANSPORT_TESTS=1 node --test tests/security/transport.test.mjs
-```
-
-PowerShell uses `$env:TEST_DATABASE_URL = '...'` and `$env:DATABASE_URL = $env:TEST_DATABASE_URL` instead of Bash exports. Browser tests use port **3100**; production transport tests use **3101** after a production build. Never use production port 3000 or live data. Tests create synthetic records in the test database. Production transport tests simulate a database outage using the test database owner: they temporarily disable connections, terminate test-database clients and restore access. Run them without other test/development sessions using that database. The optional provisioning test below also requires a test-only PostgreSQL administrator allowed to create/drop its randomly named test roles and databases:
-
-```bash
-node --test tests/postgres/*.test.mjs
+npm run lint
+npm test
 npm run test:installer
+node --test tests/postgres/*.test.mjs
 python3 tests/installer/config.test.py
-python3 scripts/audit-release.py
-bash -n install.sh
-bash -n scripts/install-production.sh
+python3 tests/installer/archive.test.py
+bash -n install.sh scripts/install-production.sh
 shellcheck install.sh scripts/install-production.sh
-npm audit --omit=dev --audit-level=high
 ```
 
-The installer runs `scripts/bootstrap-dm.mjs` to create the first account with the same username validation and asynchronous scrypt hashing as signup. It reads NUL-separated username, password and display name from stdin; never put passwords in arguments or shell history. Retries preserve the existing account.
+`E2E_ADMIN_PASSWORD` is a legacy fixture variable name: the fixture creates a **regular DM**, with no administrator privileges or authentication bypass. Playwright starts the real custom server on **3100**, with PostgreSQL and Socket.IO. Production uses 3000. Run typecheck, the full browser suite, then the production build in that order. To exercise production transport, set `PLAYWRIGHT_SERVER_COMMAND='node server.mjs'` and rerun the browser suite after building.
 
-See [the project rulebook](PROJECT_RULEBOOK.md), [security review and fixes](SECURITY_REVIEW-2026-10-23.md) and [release acceptance](RELEASE-v1.0.0.md). No deployment migration is included: this release targets a fresh installation. Existing local data files are left untouched.
+The browser suite covers campaign worlds, desktop/mobile battle interaction, drag commits, build undo, initiative, audio, public signup, literal special-character credentials, privacy, ownership, deduplication and socket-session revocation. Unit tests cover pure geometry, scene commands, initiative, ranges and private-network checks. Installer tests cover literal JSON configuration, safe extraction, credential hashing, bootstrap retries and missing/unavailable PostgreSQL.
+
+## Modules
+
+`app/api/v1` owns HTTP adapters; `lib/server` owns persistence, authentication and realtime authority. `lib/domain` contains typed contracts and pure reducers/geometry/privacy projection. `components/campaign` composes world/battle controls. `lib/client/realtime.ts` owns the single browser Socket.IO connection. Send durable edits as versioned commands and keep movement previews separate from committed snapshots. An outage must pause edits and reload saved state, never silently save offline.
+
+Use synthetic data for screenshots. Keep source recovery evidence, database exports, uploaded private media and raw chat logs outside the repository.
+
+For contribution rules and permission boundaries, see the short [project rulebook](PROJECT_RULEBOOK.md).
+
+## Release verification
+
+Before publishing a release, test the installer on fresh Ubuntu 24.04 x86-64 and ARM64 servers with public DNS and Caddy HTTPS. Verify first-DM login, public signup, player invitations, two-browser synchronization, reboot persistence and backup restoration. Exercise interrupted installation/retries, occupied ports, failed downloads and certificate failures. Local browser/build checks alone do not cover these deployment cases.
+
+The current campaign schema requires a fresh database; there is no automatic migration from the earlier simple-room app. Complete final review before publishing a tag, release or repository visibility change.

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Pool } from 'pg';
 import { bootstrapDM } from '../../scripts/bootstrap-dm.mjs';
-import { hashPassword } from '../../lib/authCredentials.mjs';
+import { passwordMatches } from '../../lib/authCredentials.mjs';
 
 test('real PostgreSQL provisioning, schema, first login credentials and retries', { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -38,16 +38,19 @@ test('real PostgreSQL provisioning, schema, first login credentials and retries'
     app.on('connect', client => {
       appConnectionsClosed.push(new Promise(resolve => client.once('end', resolve)));
     });
-    const schema = await readFile('db/schema.sql', 'utf8');
-    await app.query(schema);
-    await app.query(schema);
+    const applied = spawnSync(process.execPath, ['scripts/apply-db-schema.mjs'], { env: { ...process.env, DATABASE_URL: connection.href }, encoding: 'utf8' });
+    assert.equal(applied.status, 0, applied.stderr);
+    const repeated = spawnSync(process.execPath, ['scripts/apply-db-schema.mjs'], { env: { ...process.env, DATABASE_URL: connection.href }, encoding: 'utf8' });
+    assert.equal(repeated.status, 0, repeated.stderr);
     const dm = { username: 'gamemaster', password, name: 'Game Master' };
     assert.equal(await bootstrapDM(app, dm), true);
     assert.equal(await bootstrapDM(app, { ...dm, password: 'different password' }), false);
-    const row = (await app.query('select * from dm_profiles')).rows[0];
-    assert.equal(row.password_hash, (await hashPassword(password, row.password_salt)).hash);
-    assert.notEqual(row.password_hash, (await hashPassword('different password', row.password_salt)).hash);
-    assert.equal((await app.query('select count(*) from dm_sessions')).rows[0].count, '0');
+    const row = (await app.query('select * from users')).rows[0];
+    const [, salt, hash] = row.password_hash.split(':');
+    assert.equal(await passwordMatches(password, { password_salt: salt, password_hash: hash }), true);
+    assert.equal(await passwordMatches('different password', { password_salt: salt, password_hash: hash }), false);
+    assert.equal(row.role, 'dm');
+    assert.equal((await app.query('select count(*) from auth_sessions')).rows[0].count, '0');
   } finally {
     try {
       if (app) {

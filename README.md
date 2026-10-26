@@ -1,65 +1,54 @@
 # DND Battle Room
 
-This DND Battle Room is a self-hosted tabletop for running encounters together in your browser. U can prepare a battlefield, invite players with a room code, and manage tokens, initiative and dice in one shared room.
+DND Battle Room is a self-hosted tabletop for running encounters together in your browser. Prepare a battlefield, invite players with a campaign code, and manage tokens, initiative and dice in one shared room. Connect encounters on a world map and set the mood with shared audio.
 
-I build this App for my DND group and build it after the wishes of my Companions and the DM of what they can do
+![The DM battle workspace with a synthetic encounter](docs/images/battle-room.png)
 
-![A sample encounter with player tokens, goblins, walls, a spell effect and a shared turn order](docs/images/battle-room.png)
+- Campaign worlds with connected locations, hidden/revealed areas and separate battle scenes.
+- Battlefield backgrounds, calibrated grids, draggable tokens, drawing tools and spell effects.
+- Initiative, conditions, turn progression and public or private dice rolls.
+- Reusable token/object presets, personal portraits and uploaded campaign audio.
+- PostgreSQL saves campaigns, encounters, accounts and dice history. Players follow the DM between the world map and active encounters.
+- Phone-friendly player access without creating an account. DMs have separate accounts and campaign ownership.
 
-## These are some of the features:
+## Playing together
 
-- **Build the battlefield.** Upload a map or link a background, adjust the grid, draw walls and place spell effects.
-- **Move your pieces.** Create tokens with names, pictures, sizes and HP/status. Players control their own characters; the DM manages the encounter.
-- **Run combat together.** Collect initiative from app rolls or dice rolled at the table, then advance through the turn order.
-- **Share the dice.** Roll publicly for the table, or privately with only the roller and DM receiving the result.
-- **Prepare and reuse.** Save token and object presets in the shared library. Complete encounters are stored in PostgreSQL and survive app restarts.
-- **Play in the browser.** DMs and players see live updates, with layouts for desktop and mobile.
+1. Sign up as a DM, create a campaign and prepare its locations and encounters.
+2. Share the campaign invitation or its eight-character code. Players choose a guest name and character.
+3. Send players to an encounter, assign their tokens and run the battle together. Players control their own tokens; the DM controls the battlefield and combat progression.
 
-## How a session works
+Private rolls are visible only to their roller and the campaign DM. DM token notes stay private, and DM-controlled token HP is hidden from players. Guest identity comes from a secure session, never a matching display name.
 
-1. The DM signs in, creates a room and prepares the map and tokens.
-2. Share the invite link or room code. Players choose a name and optional picture, then enter through their browsers.
-3. Players move their tokens, roll dice and submit initiative. The DM controls the battlefield and combat progression.
+## Install on your server
 
-DM signup is public. Players can join as guests without creating a DM account. If someone loses their guest session, the DM can reassign their tokens. DM notes stay private, and DM-controlled token HP is hidden from players. Shared library notes are visible to other DMs.
+The installer supports **fresh Ubuntu 24.04 servers on x86-64 or ARM64**, with sudo/root access. It installs Node.js 24, local PostgreSQL, one application service and Caddy. No separate panel, daemon or container is needed.
 
-## Installation
+Before starting, own a public domain or subdomain, point its A/AAAA records at the server, and allow inbound TCP **80 and 443** through the firewall/router. Remove stale AAAA records if IPv6 cannot reach the server. Automatic HTTPS requires working public DNS and connectivity. The standard installer does not configure Cloudflare Tunnel or migrate an existing deployment.
 
-**Version 1.0.0 is an unpublished release candidate.** The command below becomes available when the reviewed `v1.0.0` tag is published. See [release status and verification](docs/RELEASE-v1.0.0.md).
-
-Use a **fresh Ubuntu 24.04 server**, x86-64 or ARM64, with systemd and root/sudo access. Reserve at least 2 CPU cores, 4 GB RAM and 10 GB free disk for installation and the Next.js build. Install `curl` and `python3` if missing.
-
-Before running the installer:
-
-- Point a domain/subdomain's A record at your server. Only add an AAAA record if IPv6 reaches this server too.
-- Allow inbound TCP **80 and 443** in your hosting firewall/router. DNS and forwarding are configured with your provider.
-- Use a fresh server without existing PostgreSQL, web-server configuration, or services occupying ports 80, 443, 3000 or 5432. Existing `/root/DND` installations are not migrated.
+**Release availability:** this restored source is under verification. The command below becomes usable when the reviewed `v1.0.0` tag is published in the public repository; it does not work against an unpublished/private tag.
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Darkspiet/DND-Battle-Room/v1.0.0/install.sh)
 ```
 
-The script obtains sudo access when needed and shows settings for confirmation before changing the system. You can also download and inspect `install.sh` before running it. The installer asks for:
+For a private repository or an unpublished candidate, download a source ZIP from GitHub, copy it to the Ubuntu server and extract it. From the extracted project folder, run its installer against the original ZIP:
 
-- Website name and public domain.
-- First DM username, display name, and password (at least 12 characters).
-- PostgreSQL database name, username, and password (at least 16 characters), with an option to generate a random database password.
+```bash
+bash install.sh --local-archive /absolute/path/DND-Battle-Room-1.0.0-rc.1.zip
+```
 
-Passwords are hidden and confirmed. The first DM is a regular DM. Public DM signup and existing room codes/invite links work as before; this release adds no administrator role or signup restrictions.
+Local-archive mode still downloads operating-system packages and npm dependencies. Use only a source archive you trust; installation builds and runs its code.
 
-The installer downloads the tagged source, installs Node.js 24 LTS and local PostgreSQL, applies the schema, creates the first DM, builds the app, installs systemd services, and configures Caddy HTTPS. It reports success only when local database readiness and the public HTTPS health check pass.
+The installer asks for the website name, domain, first DM username/display name/password, and PostgreSQL database name/user/password. Password entry is hidden and confirmed; database credentials can be generated. It shows a summary with secrets omitted before changing the system.
 
-### Open your battle room
+Open your chosen HTTPS URL and use **DM sign in** with the initial account. It is a regular DM account. Other DMs can sign up publicly; players use invitations. There is no application administrator role.
 
-After installation succeeds, open the website URL printed by the installer and choose **Open DM Profile**. Sign in with the first DM username and password you entered, create a room, and share its invitation with your players.
+A retry of the same installer preserves completed stages, credentials, accounts and saved data. For conflicts, stop and follow the diagnostic message; do not delete PostgreSQL data to force installation.
 
-Keep the configuration location and service commands printed by the installer. For a failed or interrupted setup, follow [installation recovery](docs/OPERATIONS.md#failed-or-interrupted-installation).
+## Guides
 
-## More information
+- [Server operations](docs/OPERATIONS.md): configuration, backups, updates and troubleshooting.
+- [Development](docs/DEVELOPMENT.md): local setup, tests and code organization.
+- [Security](docs/SECURITY.md): credentials, permissions and privacy protections.
 
-- [Operations guide](docs/OPERATIONS.md): configuration, service management, troubleshooting, backups, restore and manual updates.
-- [Development guide](docs/DEVELOPMENT.md): code organization, local PostgreSQL setup and tests.
-- [Security review](docs/SECURITY_REVIEW-2026-10-23.md) and [project rulebook](docs/PROJECT_RULEBOOK.md).
-- [Release notes and acceptance checks](docs/RELEASE-v1.0.0.md).
-
-DND Battle Room is [MIT licensed](LICENSE).
+MIT licensed; see [LICENSE](LICENSE). npm publication is intentionally disabled.

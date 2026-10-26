@@ -1,16 +1,14 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { getSiteName } from "../lib/siteConfig";
 
-export const dynamic = "force-dynamic";
-
-export function generateMetadata(): Metadata {
-  return { title: getSiteName(), description: "A realtime tabletop for DND combat rooms" };
-}
+export function generateMetadata(): Metadata { return {
+  title: process.env.SITE_NAME || "DND Battle Room",
+  description: "A self-hosted campaign world and realtime tabletop for Dungeons & Dragons."
+}; }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );
