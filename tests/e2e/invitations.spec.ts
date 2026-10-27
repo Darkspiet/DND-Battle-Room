@@ -36,7 +36,27 @@ test("DM dashboard invitations, signup UI and single-use enforcement", async ({ 
     expect(stored.rows[0].token_hash).not.toBe(code);
     // A failed account insertion must not burn the invitation.
     expect((await request.post("/api/v1/auth/signup", { data: { ...account(), username: "e2e-admin", inviteCode: code } })).status()).toBe(400);
-    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    // Keep logout pending deliberately: a click does not await the async handler.
+    // Visiting login early can read the old session and redirect back to the dashboard.
+    let releaseLogout!: () => void;
+    let logoutStarted!: () => void;
+    const logoutGate = new Promise<void>((resolve) => { releaseLogout = resolve; });
+    const logoutPending = new Promise<void>((resolve) => { logoutStarted = resolve; });
+    await page.route("**/api/v1/auth/session", async (route) => {
+      if (route.request().method() !== "DELETE") return route.continue();
+      const response = await route.fetch();
+      logoutStarted();
+      await logoutGate;
+      await route.fulfill({ response });
+    });
+    const signedOut = page.waitForResponse((response) => response.url().endsWith("/api/v1/auth/session") && response.request().method() === "DELETE");
+    try {
+      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await logoutPending;
+      await expect(page).toHaveURL(/\/dm\/dashboard/);
+    } finally { releaseLogout(); }
+    expect((await signedOut).ok()).toBe(true);
+    await expect(page).toHaveURL(`${origin}/`);
     await page.goto("/dm/login");
     await page.getByRole("button", { name: "Sign up", exact: true }).click();
     await page.getByLabel("DM invitation code").fill(code);
