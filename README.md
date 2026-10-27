@@ -23,7 +23,7 @@ Private rolls are visible only to their roller and the campaign DM. DM token not
 
 ## Install on your server
 
-###Short Warning
+**Short Warning**
 most of the dependencies and Packages used in this Project were Checked and had at this time no vunerabilities.
 This could have changed at the time of your Download so always let it check before downloading.
 
