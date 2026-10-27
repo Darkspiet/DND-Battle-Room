@@ -23,17 +23,20 @@ Private rolls are visible only to their roller and the campaign DM. DM token not
 
 ## Install on your server
 
+###Short Warning
+most of the dependencies and Packages used in this Project were Checked and had at this time no vunerabilities.
+This could have changed at the time of your Download so always let it check before downloading.
+
 The installer supports **Ubuntu 24.04 servers on x86-64 or ARM64**, with sudo/root access. It installs missing dependencies and reuses a compatible Node.js 24, local PostgreSQL 16+ and Caddy installation. Existing unrelated databases and websites are preserved. No separate panel, daemon or container is needed.
 
 Own a public domain or subdomain. For **Caddy-managed HTTPS**, point its A/AAAA records at the server and allow inbound TCP **80 and 443** through the firewall/router; remove stale AAAA records if IPv6 cannot reach it. For an **existing reverse proxy or Cloudflare Tunnel**, keep that service’s DNS/HTTPS setup and configure its route to Battle Room. The installer does not automatically migrate an older database schema.
 
-**Release availability:** this restored source is under verification. The command below becomes usable when the reviewed `v1.0.0` tag is published in the public repository; it does not work against an unpublished/private tag.
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Darkspiet/DND-Battle-Room/v1.0.0/install.sh)
 ```
 
-For a private repository or an unpublished candidate, download a source ZIP from GitHub, copy it to the Ubuntu server and extract it. From the extracted project folder, run its installer against the original ZIP:
+U can also download the source ZIP from GitHub, copy it to the Ubuntu server and extract it. From the extracted project folder u can run its installer against the original ZIP with this cmd:
 
 ```bash
 bash install.sh --local-archive /absolute/path/DND-Battle-Room-1.0.0-rc.1.zip
